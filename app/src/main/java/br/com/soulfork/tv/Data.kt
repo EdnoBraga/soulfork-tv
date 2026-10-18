@@ -20,7 +20,28 @@ data class Item(
     val url: String,
     val kind: Kind,
     val seriesId: String? = null,
+    // Only filled by the Xtream API:
+    val genre: String = "",
+    val year: Int = 0,
+    val rating: String = "",
+    val plot: String = "",
 )
+
+/** TMDB's English TV genres -> the names the list already uses for movies. */
+private val GENRE_PT = mapOf(
+    "Action & Adventure" to listOf("Ação", "Aventura"), "Sci-Fi & Fantasy" to listOf("Ficção científica", "Fantasia"),
+    "War & Politics" to listOf("Guerra", "Política"), "Soap" to listOf("Novela"), "Kids" to listOf("Infantil"),
+    "News" to listOf("Notícias"), "Talk" to listOf("Talk show"), "Reality" to listOf("Reality show"), "Comedia" to listOf("Comédia"),
+)
+
+fun genresOf(i: Item): List<String> =
+    i.genre.split(Regex("""\s*[,/]\s*""")).filter { it.isNotEmpty() }.flatMap { GENRE_PT[it] ?: listOf(it) }.distinct()
+
+private val THIS_YEAR = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+
+/** Last plausible year in a title: "Blade Runner 2049 (2017)" -> 2017. */
+fun yearOf(name: String): Int =
+    Regex("""\b(19|20)\d{2}\b""").findAll(name).map { it.value.toInt() }.lastOrNull { it <= THIS_YEAR + 1 } ?: 0
 
 /** Everything loaded from the playlist, kept in memory while the app runs. */
 object Repo {
@@ -41,7 +62,8 @@ object Repo {
 
     private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
 
-    fun cacheFile(ctx: Context) = java.io.File(ctx.filesDir, "items.tsv")
+    // New name whenever the saved format changes, so old copies are downloaded again.
+    fun cacheFile(ctx: Context) = java.io.File(ctx.filesDir, "items-v2.tsv")
 
     /**
      * Blocking: call off the main thread. Uses the copy saved on the device when there is one
@@ -49,7 +71,7 @@ object Repo {
      */
     fun load(ctx: Context, refresh: Boolean) {
         val p = Prefs(ctx)
-        xtream = if (p.mode == "xtream") Xtream(p.server, p.user, p.pass) else null
+        xtream = xtreamCreds(p)?.let { (base, user, pass) -> Xtream(base, user, pass) }
         val cache = cacheFile(ctx)
         val all = if (!refresh && cache.exists()) {
             if (System.currentTimeMillis() - cache.lastModified() > MAX_AGE_MS) {
@@ -62,9 +84,10 @@ object Repo {
         apply(all)
     }
 
+    // get.php links carry Xtream credentials: the API is faster than the M3U and brings genre, year and plot.
     private fun fetch(p: Prefs): List<Item> =
-        if (p.mode == "xtream") Xtream(p.server, p.user, p.pass).loadAll()
-        else httpGet(p.m3uUrl).use(::parseM3u)
+        xtreamCreds(p)?.let { (base, user, pass) -> Xtream(base, user, pass).loadAll() }
+            ?: httpGet(p.m3uUrl).use(::parseM3u)
 
     private fun save(file: java.io.File, items: List<Item>) {
         val tmp = java.io.File(file.path + ".tmp")
@@ -118,7 +141,7 @@ fun xtreamCreds(p: Prefs): Triple<String, String, String>? {
     return Triple(m.groupValues[1], user, pass)
 }
 
-private fun b64(s: String) = runCatching { String(android.util.Base64.decode(s, android.util.Base64.DEFAULT)) }.getOrDefault(s)
+fun b64(s: String) = runCatching { String(android.util.Base64.decode(s, android.util.Base64.DEFAULT)) }.getOrDefault(s)
 
 private val epgCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
 
@@ -194,11 +217,12 @@ fun httpGet(url: String): BufferedReader {
     throw Exception("Redirecionamentos demais")
 }
 
-/** One item per line, tab-separated: kind, name, logo, group, url, seriesId. */
+/** One item per line, tab-separated: kind, name, logo, group, url, seriesId, genre, year, rating, plot. */
 fun writeItems(items: List<Item>, w: java.io.Writer) {
     fun clean(s: String?) = s.orEmpty().replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
     for (i in items) {
-        w.write("${i.kind.ordinal}\t${clean(i.name)}\t${clean(i.logo)}\t${clean(i.group)}\t${clean(i.url)}\t${clean(i.seriesId)}\n")
+        w.write("${i.kind.ordinal}\t${clean(i.name)}\t${clean(i.logo)}\t${clean(i.group)}\t${clean(i.url)}\t${clean(i.seriesId)}" +
+            "\t${clean(i.genre)}\t${i.year}\t${clean(i.rating)}\t${clean(i.plot)}\n")
     }
 }
 
@@ -207,7 +231,8 @@ fun readItems(r: BufferedReader): List<Item> {
     val out = ArrayList<Item>()
     r.forEachLine { line ->
         val f = line.split('\t')
-        if (f.size == 6) out += Item(f[1], f[2].ifEmpty { null }, f[3], f[4], kinds[f[0].toInt()], f[5].ifEmpty { null })
+        if (f.size == 10) out += Item(f[1], f[2].ifEmpty { null }, f[3], f[4], kinds[f[0].toInt()], f[5].ifEmpty { null },
+            f[6], f[7].toIntOrNull() ?: 0, f[8], f[9])
     }
     return out
 }
@@ -337,7 +362,16 @@ class Xtream(server: String, private val user: String, private val pass: String)
 
     private fun api(action: String = "", extra: String = ""): String {
         val q = "username=${enc(user)}&password=${enc(pass)}" + (if (action.isEmpty()) "" else "&action=$action") + extra
-        return httpGet("$base/player_api.php?$q").use { it.readText() }
+        val raw = httpGet("$base/player_api.php?$q").use { it.readText() }.trim()
+        return if (raw.startsWith("\"")) b64(raw.trim('"')) else raw // some panels base64 the whole answer
+    }
+
+    private val vodCache = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+
+    /** Plot/genre/date/rating of one movie, for the details panel. Blocking. */
+    fun vodInfo(item: Item): JSONObject? {
+        val id = Regex("""/(\d+)\.\w+$""").find(item.url)?.groupValues?.get(1) ?: return null
+        return vodCache.getOrPut(id) { JSONObject(api("get_vod_info", "&vod_id=$id")).optJSONObject("info") ?: JSONObject() }
     }
 
     private fun categories(action: String): Map<String, String> {
@@ -362,10 +396,13 @@ class Xtream(server: String, private val user: String, private val pass: String)
         }
         val vod = streams("get_vod_streams", categories("get_vod_categories")) { o, g ->
             Item(o.optString("name"), o.optString("stream_icon").ifEmpty { null }, g,
-                "$base/movie/$user/$pass/${o.optString("stream_id")}.${o.optString("container_extension", "mp4")}", Kind.MOVIE)
+                "$base/movie/$user/$pass/${o.optString("stream_id")}.${o.optString("container_extension", "mp4")}", Kind.MOVIE,
+                year = yearOf(o.optString("name")), rating = o.optString("rating"))
         }
         val series = streams("get_series", categories("get_series_categories")) { o, g ->
-            Item(o.optString("name"), o.optString("cover").ifEmpty { null }, g, "", Kind.SERIES, o.optString("series_id"))
+            Item(o.optString("name"), o.optString("cover").ifEmpty { null }, g, "", Kind.SERIES, o.optString("series_id"),
+                genre = o.optString("genre"), year = o.optString("releaseDate").take(4).toIntOrNull() ?: yearOf(o.optString("name")),
+                rating = o.optString("rating"), plot = o.optString("plot"))
         }
         return live + vod + series
     }
@@ -379,7 +416,10 @@ class Xtream(server: String, private val user: String, private val pass: String)
             for (i in 0 until arr.length()) {
                 val e = arr.getJSONObject(i)
                 out += Item(
-                    "T$season E${e.optString("episode_num")} · ${e.optString("title")}",
+                    // Titles often repeat the show: "Pinky e o Cérebro - S01E01 - Ratos" -> "Ratos".
+                    "E${e.optString("episode_num")}" + e.optString("title")
+                        .replace(Regex("""^.*?S\d+\s*E\d+\s*[-–:]?\s*""", RegexOption.IGNORE_CASE), "")
+                        .let { if (it.isEmpty()) "" else " · $it" },
                     e.optJSONObject("info")?.optString("movie_image")?.ifEmpty { null },
                     "Temporada $season",
                     "$base/series/$user/$pass/${e.optString("id")}.${e.optString("container_extension", "mp4")}",

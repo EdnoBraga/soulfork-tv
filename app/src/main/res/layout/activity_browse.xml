@@ -3,11 +3,11 @@
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="horizontal" android:padding="24dp">
 
-    <LinearLayout android:layout_width="320dp" android:layout_height="match_parent"
+    <LinearLayout android:id="@+id/left" android:layout_width="320dp" android:layout_height="match_parent"
         android:orientation="vertical">
         <TextView android:id="@+id/title" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:textSize="28sp" android:textStyle="bold"
-            android:textColor="@color/cyan" android:paddingBottom="12dp" />
+            android:textColor="@color/cyan" android:paddingBottom="12dp" android:maxLines="1" android:ellipsize="end" />
         <androidx.recyclerview.widget.RecyclerView android:id="@+id/groups"
             android:layout_width="match_parent" android:layout_height="match_parent" />
     </LinearLayout>
@@ -23,8 +23,24 @@
         <TextView android:id="@+id/empty" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:padding="24dp" android:textSize="18sp"
             android:textColor="@color/muted" android:visibility="gone" />
-        <androidx.recyclerview.widget.RecyclerView android:id="@+id/items"
-            android:layout_width="match_parent" android:layout_height="match_parent"
-            android:layout_marginTop="12dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+            android:layout_marginTop="12dp" android:orientation="horizontal">
+            <!-- List (channels, episodes) or 3-column poster grid (movies, series). -->
+            <androidx.recyclerview.widget.RecyclerView android:id="@+id/items"
+                android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+            <!-- Details of the highlighted movie/series; only in grid mode. -->
+            <LinearLayout android:id="@+id/details" android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1" android:layout_marginStart="20dp" android:orientation="vertical"
+                android:visibility="gone">
+                <TextView android:id="@+id/dTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:textSize="22sp" android:textStyle="bold" android:maxLines="2" android:ellipsize="end" />
+                <TextView android:id="@+id/dMeta" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:textSize="15sp" android:textColor="@color/cyan" />
+                <TextView android:id="@+id/dPlot" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp" android:textSize="15sp" android:textColor="#DFE3FF"
+                    android:lineSpacingMultiplier="1.25" android:ellipsize="end" android:maxLines="14" />
+            </LinearLayout>
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

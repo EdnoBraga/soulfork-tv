@@ -48,6 +48,15 @@ class M3uTest {
     }
 
     @Test
+    fun yearAndGenres() {
+        assertEquals(2017, yearOf("Blade Runner 2049 (2017)"))
+        assertEquals(2026, yearOf("Batman: A Queda do Morcego - Parte 1 (2026)"))
+        assertEquals(0, yearOf("Zorro"))
+        val s = Item("x", null, "g", "", Kind.SERIES, "1", genre = "Action & Adventure, Drama, Sci-Fi & Fantasy")
+        assertEquals(listOf("Ação", "Aventura", "Drama", "Ficção científica", "Fantasia"), genresOf(s))
+    }
+
+    @Test
     fun sortsEpisodesBySeasonThenEpisode() {
         fun ep(n: String, s: Int) = Item(n, null, "Temporada $s", "u", Kind.EPISODE)
         val sorted = listOf(ep("Zorro S02 E01", 2), ep("Zorro S01 E10", 1), ep("Zorro S01 E02", 1), ep("T1 E1 · Piloto", 1))

@@ -24,6 +24,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
@@ -157,20 +158,24 @@ class HomeActivity : Activity() {
     }
 }
 
-/** Categories on the left, items on the right — used for live, movies, series and a series' episodes. */
+/** Categories on the left; a list (channels, episodes) or a poster grid with details (movies, series) on the right. */
 class BrowseActivity : Activity() {
+    private class Group(val label: String, val sort: Comparator<Item>? = null, val test: (Item, Set<String>) -> Boolean)
+
     private lateinit var prefs: Prefs
     private lateinit var groupsView: RecyclerView
     private lateinit var itemsView: RecyclerView
     private lateinit var search: EditText
     private lateinit var empty: TextView
+    private lateinit var epg: TextView
+    private lateinit var details: View
     private var all = emptyList<Item>()
-    private var groups = emptyList<String>()
+    private var groups = emptyList<Group>()
     private var shown = emptyList<Item>()
     private var current = 1
     private var groupsAdapter: Rows? = null
     private var episodes = false
-    private lateinit var epg: TextView
+    private var grid = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onCreate(state: Bundle?) {
@@ -183,8 +188,8 @@ class BrowseActivity : Activity() {
         search = findViewById(R.id.search)
         empty = findViewById(R.id.empty)
         epg = findViewById(R.id.epg)
+        details = findViewById(R.id.details)
         groupsView.layoutManager = LinearLayoutManager(this)
-        itemsView.layoutManager = LinearLayoutManager(this)
         findViewById<TextView>(R.id.title).text = intent.getStringExtra("title")
         search.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) = refresh()
@@ -197,6 +202,7 @@ class BrowseActivity : Activity() {
         if (seriesId == null) {
             setData(Repo.list(Kind.valueOf(intent.getStringExtra("kind")!!)))
         } else {
+            itemsView.layoutManager = LinearLayoutManager(this)
             showEmpty("Carregando episódios…")
             thread {
                 val r = runCatching { Repo.episodes(seriesId) }
@@ -206,19 +212,33 @@ class BrowseActivity : Activity() {
     }
 
     private fun setData(list: List<Item>) {
+        grid = !episodes && list.firstOrNull()?.kind.let { it == Kind.MOVIE || it == Kind.SERIES }
+        itemsView.layoutManager = if (grid) GridLayoutManager(this, 3) else LinearLayoutManager(this)
+        details.visibility = if (grid) View.VISIBLE else View.GONE
+        val byGroup = list.map { it.group }.distinct().map { g -> Group(g) { i, _ -> i.group == g } }
         if (episodes) {
             // A series: only its seasons on the left, opening on the first one, episodes in order.
             all = list.sortedWith(byEpisode)
-            groups = all.map { it.group }.distinct()
+            groups = all.map { it.group }.distinct().map { g -> Group(g) { i, _ -> i.group == g } }
             current = 0
         } else {
             all = list
-            groups = listOf("★ Favoritos", "Todos") + list.map { it.group }.distinct()
+            val extra = if (!grid) emptyList() else {
+                // Genres from the server (series), most common first, then release years, newest first.
+                val genres = all.flatMap(::genresOf).groupingBy { it }.eachCount().entries.sortedByDescending { it.value }
+                    .map { (g, _) -> Group("Gênero · $g") { i, _ -> g in genresOf(i) } }
+                val years = all.map { it.year }.filter { it > 0 }.distinct().sortedDescending()
+                    .map { y -> Group("Ano $y") { i, _ -> i.year == y } }
+                genres + years
+            }
+            groups = listOf(Group("★ Favoritos") { i, f -> key(i) in f }, Group("Todos") { _, _ -> true }) +
+                (if (grid) listOf(Group("Mais novos", compareByDescending { it.year }) { i, _ -> i.year > 0 }) else emptyList()) +
+                byGroup + extra
             // Start on "Todos" unless there are favorites. A category opens on click (OK or mouse), not on focus:
             // focus-driven switching fired on RecyclerView's own default focus and never fired for mouse clicks.
             current = if (all.any { key(it) in prefs.favorites }) 0 else 1
         }
-        groupsAdapter = Rows(groups.map { it to null }, onClick = {
+        groupsAdapter = Rows(groups.map { it.label to null }, onClick = {
             current = it
             refresh()
             itemsView.post { itemsView.getChildAt(0)?.requestFocus() }
@@ -227,6 +247,31 @@ class BrowseActivity : Activity() {
         refresh()
         if (episodes) itemsView.post { itemsView.getChildAt(0)?.requestFocus() }
         else groupsView.post { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() }
+    }
+
+    private fun key(i: Item) = i.seriesId?.let { "series:$it" } ?: i.url
+
+    private fun refresh() {
+        // Mark the selected group without notify*, which would rebind rows and drop the remote's focus.
+        groupsAdapter?.selected = current
+        for (i in 0 until groupsView.childCount) groupsView.getChildAt(i).let { it.isSelected = groupsView.getChildAdapterPosition(it) == current }
+        val g = groups.getOrNull(current) ?: return
+        val favs = prefs.favorites
+        val q = search.text.toString().trim()
+        shown = all.filter { g.test(it, favs) && (q.isEmpty() || it.name.contains(q, ignoreCase = true)) }
+            .let { if (g.sort != null) it.sortedWith(g.sort) else it }
+
+        val toGroups = { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus(); Unit }
+        itemsView.adapter = if (grid) Posters(shown, onClick = ::open, onLong = ::toggleFavorite, onLeft = toGroups, onFocus = ::showDetails)
+        else Rows(shown.map { it.name to it.logo }, onClick = ::open, onLong = ::toggleFavorite, onLeft = toGroups, onFocus = ::showEpg)
+        if (shown.isEmpty()) showEmpty(if (current == 0 && !episodes) "Sem favoritos ainda. Segure OK num item para favoritar." else "Nada aqui.")
+        else empty.visibility = View.GONE
+        if (grid) showDetails(0)
+    }
+
+    private fun showEmpty(msg: String) {
+        empty.text = msg
+        empty.visibility = View.VISIBLE
     }
 
     /** Guide for the highlighted channel, fetched only once the remote stops moving. */
@@ -244,33 +289,32 @@ class BrowseActivity : Activity() {
         }, 500)
     }
 
-    private fun key(i: Item) = i.seriesId?.let { "series:$it" } ?: i.url
-
-    private fun refresh() {
-        // Mark the selected group without notify*, which would rebind rows and drop the remote's focus.
-        groupsAdapter?.selected = current
-        for (i in 0 until groupsView.childCount) groupsView.getChildAt(i).let { it.isSelected = groupsView.getChildAdapterPosition(it) == current }
-        val favs = prefs.favorites
-        val q = search.text.toString().trim()
-        shown = when {
-            episodes -> all.filter { it.group == groups[current] }
-            current == 0 -> all.filter { key(it) in favs }
-            current == 1 -> all
-            else -> all.filter { it.group == groups[current] }
-        }.filter { q.isEmpty() || it.name.contains(q, ignoreCase = true) }
-
-        itemsView.adapter = Rows(shown.map { it.name to it.logo },
-            onClick = ::open,
-            onLong = ::toggleFavorite,
-            onLeft = { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() },
-            onFocus = ::showEpg)
-        if (shown.isEmpty()) showEmpty(if (current == 0 && !episodes) "Sem favoritos ainda. Segure OK num item para favoritar." else "Nada aqui.")
-        else empty.visibility = View.GONE
-    }
-
-    private fun showEmpty(msg: String) {
-        empty.text = msg
-        empty.visibility = View.VISIBLE
+    /** Title, year, rating, genre and plot of the highlighted poster; movies fetch their plot on demand. */
+    private fun showDetails(pos: Int) {
+        val item = shown.getOrNull(pos) ?: return
+        fun fill(genre: String, year: String, rating: String, plot: String) {
+            findViewById<TextView>(R.id.dTitle).text = item.name
+            val stars = rating.toDoubleOrNull()?.takeIf { it > 0 }?.let { "★ " + String.format("%.1f", it).replace('.', ',') }
+            findViewById<TextView>(R.id.dMeta).text = listOfNotNull(year.ifEmpty { null }, stars, genre.ifEmpty { null }).joinToString("  ·  ")
+            findViewById<TextView>(R.id.dPlot).text = plot
+        }
+        val year = if (item.year > 0) item.year.toString() else ""
+        val needsInfo = item.kind == Kind.MOVIE && item.plot.isEmpty() && Repo.xtream != null
+        fill(genresOf(item).joinToString(", "), year, item.rating,
+            item.plot.ifEmpty { if (needsInfo) "Carregando sinopse…" else "Sem sinopse." })
+        handler.removeCallbacksAndMessages(null)
+        if (!needsInfo) return
+        handler.postDelayed({
+            thread {
+                val info = runCatching { Repo.xtream?.vodInfo(item) }.getOrNull()
+                runOnUiThread {
+                    if (shown.getOrNull(pos) !== item) return@runOnUiThread
+                    fill(info?.optString("genre").orEmpty(), year.ifEmpty { info?.optString("releasedate").orEmpty().take(4) },
+                        item.rating.ifEmpty { info?.optString("rating").orEmpty() },
+                        info?.optString("plot").orEmpty().ifEmpty { "Sem sinopse." })
+                }
+            }
+        }, 500)
     }
 
     private fun open(pos: Int) {
@@ -292,6 +336,48 @@ class BrowseActivity : Activity() {
         toast(if (k in favs) "Adicionado aos favoritos" else "Removido dos favoritos")
         if (current == 0) refresh()
     }
+}
+
+/** Poster grid cell: cover image with the title over it. */
+class Posters(
+    private val items: List<Item>,
+    private val onClick: (Int) -> Unit,
+    private val onLong: (Int) -> Unit,
+    private val onLeft: () -> Unit,
+    private val onFocus: (Int) -> Unit,
+) : RecyclerView.Adapter<Posters.VH>() {
+    class VH(v: View) : RecyclerView.ViewHolder(v) {
+        val cover: ImageView = v.findViewById(R.id.cover)
+        val caption: TextView = v.findViewById(R.id.caption)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, type: Int): VH {
+        val vh = VH(LayoutInflater.from(parent.context).inflate(R.layout.poster, parent, false))
+        val v = vh.itemView
+        fun pos(f: (Int) -> Unit) { vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(f) }
+        v.setOnClickListener { pos(onClick) }
+        v.setOnLongClickListener { pos(onLong); true }
+        v.setOnFocusChangeListener { _, has ->
+            v.animate().scaleX(if (has) 1.08f else 1f).scaleY(if (has) 1.08f else 1f).setDuration(120).start()
+            if (has) pos(onFocus)
+        }
+        // Leaving the first column goes back to the categories.
+        v.setOnKeyListener { _, code, e ->
+            if (code == KeyEvent.KEYCODE_DPAD_LEFT && e.action == KeyEvent.ACTION_DOWN && vh.bindingAdapterPosition % 3 == 0) {
+                onLeft(); true
+            } else false
+        }
+        return vh
+    }
+
+    override fun onBindViewHolder(vh: VH, pos: Int) {
+        val item = items[pos]
+        vh.caption.text = item.name
+        vh.cover.setImageDrawable(null)
+        if (item.logo != null) vh.cover.load(item.logo)
+    }
+
+    override fun getItemCount() = items.size
 }
 
 class Rows(
