@@ -194,7 +194,7 @@ class BrowseActivity : Activity() {
         } else {
             showEmpty("Carregando episódios…")
             thread {
-                val r = runCatching { Repo.xtream!!.episodes(seriesId) }
+                val r = runCatching { Repo.episodes(seriesId) }
                 runOnUiThread { r.onSuccess { setData(it) }.onFailure { showEmpty("Não deu para carregar: ${it.message}") } }
             }
         }
@@ -203,9 +203,14 @@ class BrowseActivity : Activity() {
     private fun setData(list: List<Item>) {
         all = list
         groups = listOf("★ Favoritos", "Todos") + list.map { it.group }.distinct()
-        groupsAdapter = Rows(groups.map { it to null },
-            onClick = { itemsView.getChildAt(0)?.requestFocus() },
-            onFocus = { if (it != current) { current = it; refresh() } })
+        // Start on "Todos" unless there are favorites. A category opens on click (OK or mouse), not on focus:
+        // focus-driven switching fired on RecyclerView's own default focus and never fired for mouse clicks.
+        current = if (all.any { key(it) in prefs.favorites }) 0 else 1
+        groupsAdapter = Rows(groups.map { it to null }, onClick = {
+            current = it
+            refresh()
+            itemsView.post { itemsView.getChildAt(0)?.requestFocus() }
+        })
         groupsView.adapter = groupsAdapter
         refresh()
         groupsView.post { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() }
@@ -262,7 +267,6 @@ class BrowseActivity : Activity() {
 class Rows(
     private val rows: List<Pair<String, String?>>,
     private val onClick: (Int) -> Unit,
-    private val onFocus: ((Int) -> Unit)? = null,
     private val onLong: ((Int) -> Unit)? = null,
     private val onLeft: (() -> Unit)? = null,
 ) : RecyclerView.Adapter<Rows.VH>() {
@@ -277,7 +281,6 @@ class Rows(
         val vh = VH(LayoutInflater.from(parent.context).inflate(R.layout.row, parent, false))
         val v = vh.itemView
         v.setOnClickListener { vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(onClick) }
-        v.setOnFocusChangeListener { _, has -> if (has) vh.bindingAdapterPosition.takeIf { it >= 0 }?.let { onFocus?.invoke(it) } }
         if (onLong != null) v.setOnLongClickListener { vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(onLong); true }
         if (onLeft != null) v.setOnKeyListener { _, code, e ->
             if (code == KeyEvent.KEYCODE_DPAD_LEFT && e.action == KeyEvent.ACTION_DOWN) { onLeft.invoke(); true } else false

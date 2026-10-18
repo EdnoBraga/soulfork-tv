@@ -28,7 +28,7 @@ object Repo {
     var movies = emptyList<Item>()
     var series = emptyList<Item>()
     var xtream: Xtream? = null
-    var loaded = false
+    @Volatile var loaded = false
 
     /** List the player walks through with channel up/down. */
     var playlist = emptyList<Item>()
@@ -53,9 +53,29 @@ object Repo {
         }
         live = all.filter { it.kind == Kind.LIVE }
         movies = all.filter { it.kind == Kind.MOVIE }
-        series = all.filter { it.kind == Kind.SERIES || it.kind == Kind.EPISODE }
+        // M3U lists series as loose episodes; fold them into one entry per show, like Xtream does.
+        m3uEpisodes = groupEpisodes(all.filter { it.kind == Kind.EPISODE })
+        series = all.filter { it.kind == Kind.SERIES } + m3uEpisodes.map { (show, eps) ->
+            Item(show, eps[0].logo, eps[0].group, "", Kind.SERIES, "m3u:$show")
+        }
         loaded = true
     }
+
+    var m3uEpisodes = emptyMap<String, List<Item>>()
+
+    /** Episodes of a series, either from the M3U grouping or fetched from Xtream. Blocking. */
+    fun episodes(seriesId: String) =
+        if (seriesId.startsWith("m3u:")) m3uEpisodes[seriesId.removePrefix("m3u:")].orEmpty()
+        else xtream!!.episodes(seriesId)
+}
+
+private val episodeRe = Regex("""^(.*?)[\s._-]*[Ss](\d{1,2})\s*[Ee]\d{1,3}""")
+
+/** "The Office S02 E05" -> show "The Office", episode grouped under "Temporada 2". */
+fun groupEpisodes(eps: List<Item>): Map<String, List<Item>> = eps.groupBy { e ->
+    episodeRe.find(e.name)?.groupValues?.get(1)?.trim()?.ifEmpty { null } ?: e.name
+}.mapValues { (_, list) ->
+    list.map { e -> episodeRe.find(e.name)?.let { e.copy(group = "Temporada ${it.groupValues[2].toInt()}") } ?: e }
 }
 
 class Prefs(ctx: Context) {

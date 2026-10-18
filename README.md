@@ -11,7 +11,7 @@ Player de IPTV para Fire Stick / Android TV. Aceita link M3U/M3U8 ou login Xtrea
 4. Abra o SoulFork TV. A tela mostra um endereço: abra-o no celular (no mesmo Wi-Fi) e cole o link da sua lista lá.
 
 Link do APK (sempre a versão mais nova):
-`https://github.com/<usuario>/soulfork-tv/releases/latest/download/SoulForkTV.apk`
+`https://github.com/EdnoBraga/soulfork-tv/releases/latest/download/SoulForkTV.apk`
 
 ## Controle remoto
 

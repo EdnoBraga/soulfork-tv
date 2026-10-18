@@ -31,4 +31,14 @@ class M3uTest {
         assertEquals("Sem categoria", items[2].group)
         assertEquals(Kind.EPISODE, items[2].kind)
     }
+
+    @Test
+    fun groupsLooseEpisodesIntoShowsAndSeasons() {
+        fun ep(n: String) = Item(n, null, "Séries | Comédia", "http://s/series/$n.mp4", Kind.EPISODE)
+        val shows = groupEpisodes(listOf(ep("The Office S01 E01"), ep("The Office S02E05"), ep("Dark S1 E1"), ep("Avulso")))
+
+        assertEquals(listOf("The Office", "Dark", "Avulso"), shows.keys.toList())
+        assertEquals(listOf("Temporada 1", "Temporada 2"), shows["The Office"]!!.map { it.group })
+        assertEquals("Séries | Comédia", shows["Avulso"]!![0].group)
+    }
 }
