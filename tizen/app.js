@@ -489,7 +489,7 @@ function Login(autoload, refresh) {
 function Home() {
   var cards = [['TV ao Vivo', repo.live.length + ' canais'], ['Filmes', repo.movies.length + ' títulos'],
     ['Séries', repo.series.length + ' títulos']];
-  if (DESKTOP) cards.push(['Multitela', 'até 4 canais']); // TVs get a single video decoder, see Multi
+  if (DESKTOP) cards.push(['Multitela', 'até ' + MULTI_MAX + ' canais']); // TVs get a single video decoder, see Multi
   // 0..C-1: cards, C and C+1: the actions underneath.
   var C = cards.length, idx = 0;
   function render() {
@@ -524,16 +524,24 @@ function Home() {
   return screen;
 }
 
-/** Saved multiscreen channels (URLs), shared by the multiscreen and "hold OK" in the live player. */
-function multiUrls() { try { return JSON.parse(prefs.get('multi') || '[]'); } catch (e) { return []; } }
-function saveMultiUrls(urls) { prefs.set('multi', JSON.stringify(urls)); }
+/**
+ * Multiscreen channels (URLs), shared by the multiscreen and "hold OK" in the live player.
+ * Kept only while the app is open (sessionStorage): closing it starts the next multiscreen empty.
+ */
+var MULTI_MAX = 9; // a PC decodes 9 HD channels; the limit is bandwidth (~5 Mbps each)
+var CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+function multiUrls() { try { return JSON.parse(sessionStorage.getItem('sf.multi') || '[]'); } catch (e) { return []; } }
+function saveMultiUrls(urls) { sessionStorage.setItem('sf.multi', JSON.stringify(urls)); }
+prefs.del('multi'); // older versions kept them across restarts
 
 /** Plays a live channel in a <video>: the .m3u8 variant of the stream through hls.js. Returns a stop function. */
 function playHls(video, url, onFail) {
   var hls = null;
   var m3u8 = url.replace(/\.ts$/, '') + '.m3u8';
   if (window.Hls && Hls.isSupported()) {
-    hls = new Hls({ maxBufferLength: 10, backBufferLength: 0 });
+    // Opening many channels at once makes the panel slow to answer: retry instead of giving up.
+    hls = new Hls({ maxBufferLength: 10, backBufferLength: 0, manifestLoadingMaxRetry: 6, manifestLoadingRetryDelay: 1500,
+      levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 });
     hls.on(Hls.Events.ERROR, function (e, d) { if (d.fatal) onFail(d.details); });
     hls.loadSource(m3u8);
     hls.attachMedia(video);
@@ -548,10 +556,11 @@ function playHls(video, url, onFail) {
 }
 
 /**
- * Windows only: up to 4 live channels at once, one <video> + hls.js each. (On the Samsung QN55Q80B an app gets
+ * Windows only: up to MULTI_MAX live channels at once, one <video> + hls.js each. (On the Samsung QN55Q80B an app gets
  * a single video decoder, so this was removed from the TV after on-device tests.) One more cell than channels is
  * shown: 1 full screen, 2 side by side, 3-4 in 2x2. The selected cell has the sound.
- * OK picks or swaps the cell's channel, CH+/CH- (PageUp/PageDown) zaps it, holding OK removes it.
+ * Left/right pick the cell, up/down (also CH+/CH-, PageUp/PageDown) zap its channel, OK picks or swaps it from
+ * the list, holding OK removes it.
  */
 function Multi(focusUrl) {
   var channels = [], sel = 0, cells = [];
@@ -562,15 +571,15 @@ function Multi(focusUrl) {
     channels = multiUrls().map(function (u) { return byUrl.get(u); }).filter(Boolean);
     if (focusUrl) { sel = Math.max(0, channels.map(function (c) { return c[I_URL]; }).indexOf(focusUrl)); focusUrl = null; }
   }
-  function count() { return Math.min(4, channels.length + 1); }
+  function count() { return Math.min(MULTI_MAX, channels.length + 1); }
 
   function render() {
     load();
-    app.innerHTML = '<div class="multi">' + [0, 1, 2, 3].map(function (i) {
+    app.innerHTML = '<div class="multi">' + CELLS.map(function (i) {
       return '<div class="cell" id="c' + i + '" data-n="' + i + '"><video muted playsinline></video>' +
         '<div class="hint">+ Adicionar canal</div><div class="label"></div></div>';
     }).join('') + '</div>';
-    cells = [0, 1, 2, 3].map(function (i) {
+    cells = CELLS.map(function (i) {
       var el = document.getElementById('c' + i);
       return { el: el, video: el.querySelector('video'), label: el.querySelector('.label'), hint: el.querySelector('.hint') };
     });
@@ -583,7 +592,10 @@ function Multi(focusUrl) {
     var n = count();
     sel = Math.min(sel, n - 1);
     var boxes = n === 1 ? [[0, 0, 1920, 1080]] : n === 2 ? [[0, 270, 960, 540], [960, 270, 960, 540]]
-      : [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]];
+      : n <= 4 ? [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]]
+      : CELLS.map(function (i) { // 5-6: 3x2 centered, 7-9: 3x3
+        return [(i % 3) * 640, (n <= 6 ? 180 : 0) + Math.floor(i / 3) * 360, 640, 360];
+      });
     cells.forEach(function (c, i) {
       var b = i < n ? boxes[i] : null, ch = channels[i];
       c.el.style.display = b ? 'block' : 'none';
@@ -606,14 +618,11 @@ function Multi(focusUrl) {
   function stop(i) { var c = cells[i]; if (c && c.stop) { c.stop(); c.stop = null; } }
   function stopAll() { cells.forEach(function (c, i) { stop(i); }); }
 
+  /** Left/right walk the cells in order (1 → 2 → 3 → 4); up/down are for changing the channel. */
   function move(k) {
     var n = count();
-    if (n === 1) return;
-    var r = sel >> 1, col = sel & 1;
-    if (k === KEY.LEFT) col = 0; else if (k === KEY.RIGHT) col = 1;
-    else if (k === KEY.UP) r = 0; else if (k === KEY.DOWN) r = 1;
-    var next = n === 2 ? col : r * 2 + col;
-    if (next < n) sel = next;
+    if (k === KEY.LEFT) sel = (sel - 1 + n) % n;
+    else if (k === KEY.RIGHT) sel = (sel + 1) % n;
   }
 
   /** Puts `it` in cell i (adding or replacing). The server refuses the same channel twice at the same time. */
@@ -666,8 +675,8 @@ function Multi(focusUrl) {
         render();
         return;
       }
-      if (k === KEY.CHUP || k === KEY.PGUP) { zap(-1); return; }
-      if (k === KEY.CHDOWN || k === KEY.PGDN) { zap(1); return; }
+      if (k === KEY.UP || k === KEY.CHUP || k === KEY.PGUP) { zap(-1); return; }
+      if (k === KEY.DOWN || k === KEY.CHDOWN || k === KEY.PGDN) { zap(1); return; }
       move(k);
       update();
     },
@@ -944,7 +953,7 @@ function Player(list, start) {
   function addToMulti() {
     var url = item()[I_URL], urls = multiUrls();
     if (urls.indexOf(url) < 0) {
-      if (urls.length >= 4) { toast('O Multitela já tem 4 canais. Segure OK num quadro para tirar um.'); return; }
+      if (urls.length >= MULTI_MAX) { toast('O Multitela já tem ' + MULTI_MAX + ' canais. Segure OK num quadro para tirar um.'); return; }
       urls.push(url);
       saveMultiUrls(urls);
     }

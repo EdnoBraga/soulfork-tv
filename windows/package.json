@@ -1,8 +1,8 @@
 {
   "name": "soulfork-tv",
   "productName": "SoulFork TV",
-  "version": "1.0.0",
-  "description": "SoulFork TV — player de IPTV (M3U e Xtream) para Windows",
+  "version": "1.1.0",
+  "description": "SoulFork TV - player de IPTV (M3U e Xtream) para Windows",
   "main": "main.js",
   "author": "SoulFork",
   "license": "UNLICENSED",

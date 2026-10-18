@@ -54,6 +54,9 @@ object Repo {
     /** List the player walks through with channel up/down. */
     var playlist = emptyList<Item>()
 
+    /** Multiscreen channel URLs, one per line. In memory only: closing the app starts it empty. */
+    var multi = ""
+
     fun list(kind: Kind) = when (kind) {
         Kind.LIVE -> live
         Kind.MOVIE -> movies
@@ -180,8 +183,6 @@ class Prefs(ctx: Context) {
     var server by str("server")
     var user by str("user")
     var pass by str("pass")
-    /** Multiscreen channel URLs, one per line. */
-    var multi by str("multi")
 
     val hasLogin get() = if (mode == "xtream") server.isNotEmpty() && user.isNotEmpty() else m3uUrl.isNotEmpty()
 

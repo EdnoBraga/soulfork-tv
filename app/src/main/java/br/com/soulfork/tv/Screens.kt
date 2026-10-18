@@ -515,12 +515,11 @@ class PlayerActivity : Activity() {
     }
 
     private fun addToMulti() {
-        val prefs = Prefs(this)
-        val urls = prefs.multi.split('\n').filter { it.isNotEmpty() }.toMutableList()
+        val urls = Repo.multi.split('\n').filter { it.isNotEmpty() }.toMutableList()
         if (item.url !in urls) {
             if (urls.size >= 4) { toast("O Multitela já tem 4 canais. Segure OK num quadro para tirar um."); return }
             urls += item.url
-            prefs.multi = urls.joinToString("\n")
+            Repo.multi = urls.joinToString("\n")
         }
         toast("${item.name} no Multitela")
         // Back to the open multiscreen if it is underneath, otherwise a new one.

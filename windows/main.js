@@ -3,6 +3,10 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// A window covered by another one counts as hidden, and Chromium then pauses muted videos (the other cells).
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+app.commandLine.appendSwitch('disable-background-media-suspend');
+
 // Same identity as the TV apps: the IPTV panel ties its stream tokens to the user agent.
 const USER_AGENT = 'Mozilla/5.0 (Linux; Android) SoulForkTV/1.0';
 
@@ -18,6 +22,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       // IPTV servers send no CORS headers; the page only ever loads our own local files.
       webSecurity: false,
+      // Keep the multiscreen running when the window is behind others or minimized.
+      backgroundThrottling: false,
     },
   });
   win.setMenu(null);

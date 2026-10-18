@@ -25,13 +25,13 @@ import androidx.media3.ui.PlayerView
 /**
  * Up to 4 live channels at once. Shows one more cell than there are channels (to add the next one):
  * 1 cell full screen, 2 side by side, 3-4 in a 2x2 grid. Only the selected cell has sound.
- * OK picks or swaps the cell's channel, CH+/CH- (or rewind/fast-forward) zaps it, holding OK removes it.
+ * Left/right pick the cell, up/down (also CH+/CH-, rewind/fast-forward) zap its channel, OK picks or swaps
+ * it from the live list, holding OK removes it.
  */
 @OptIn(UnstableApi::class)
 class MultiActivity : Activity() {
     private class Cell(val frame: FrameLayout, val video: PlayerView, val label: TextView, val hint: TextView)
 
-    private lateinit var prefs: Prefs
     private val channels = ArrayList<Item>()
     private val players = arrayOfNulls<ExoPlayer>(4)
     private lateinit var cells: List<Cell>
@@ -43,7 +43,6 @@ class MultiActivity : Activity() {
         super.onCreate(state)
         if (!Repo.loaded) { startActivity(Intent(this, LoginActivity::class.java)); finish(); return }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        prefs = Prefs(this)
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
         rows = List(2) { LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL } }
@@ -84,7 +83,7 @@ class MultiActivity : Activity() {
         // The saved list is the source of truth: the player adds channels to it too (hold OK).
         val byUrl = Repo.live.associateBy { it.url }
         channels.clear()
-        prefs.multi.split('\n').mapNotNullTo(channels) { byUrl[it] }
+        Repo.multi.split('\n').mapNotNullTo(channels) { byUrl[it] }
         intent.getStringExtra("url")?.let { url ->
             channels.indexOfFirst { it.url == url }.takeIf { it >= 0 }?.let { sel = it }
             intent.removeExtra("url")
@@ -146,17 +145,16 @@ class MultiActivity : Activity() {
         if (::cells.isInitialized) cells[i].video.player = null
     }
 
-    private fun save() { prefs.multi = channels.joinToString("\n") { it.url } }
+    private fun save() { Repo.multi = channels.joinToString("\n") { it.url } }
 
     override fun onKeyDown(code: Int, e: KeyEvent): Boolean {
         when (code) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { e.startTracking(); return true }
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                move(code); return true
-            }
-            // The Fire TV remote has no CH+/CH-: rewind / fast-forward zap the selected cell too.
-            KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_REWIND -> { zap(-1); return true }
-            KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { zap(1); return true }
+            // Left/right walk the cells in order; up/down (and CH+/CH-, rewind/fast-forward) change the channel.
+            KeyEvent.KEYCODE_DPAD_LEFT -> { move(-1); return true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { move(1); return true }
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_REWIND -> { zap(-1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { zap(1); return true }
         }
         return super.onKeyDown(code, e)
     }
@@ -181,19 +179,9 @@ class MultiActivity : Activity() {
         return true
     }
 
-    private fun move(code: Int) {
-        val n = count
-        if (n == 1) return
-        var r = sel / 2
-        var c = sel % 2
-        when (code) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> c = 0
-            KeyEvent.KEYCODE_DPAD_RIGHT -> c = 1
-            KeyEvent.KEYCODE_DPAD_UP -> r = 0
-            KeyEvent.KEYCODE_DPAD_DOWN -> r = 1
-        }
-        val next = r * 2 + c
-        if (next < n) { sel = next; layoutCells() }
+    private fun move(delta: Int) {
+        sel = (sel + delta).mod(count)
+        layoutCells()
     }
 
     private var pickCell = 0
