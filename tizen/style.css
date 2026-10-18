@@ -1,0 +1,64 @@
+:root { --bg: #0B0F1F; --card: #1A2140; --cyan: #5EE6E6; --purple: #5B2FC9; --muted: #9AA3C7; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: #fff;
+    font-family: "Samsung One", "SamsungOneUI", Roboto, Arial, sans-serif; }
+body.playing { background: transparent; }
+body.playing #app { display: none; }
+/* AVPlay draws on a hardware plane under the page: #av must stay transparent. */
+#av, #vid { position: fixed; top: 0; left: 0; width: 1920px; height: 1080px; }
+#vid { background: #000; }
+#app { position: relative; width: 1920px; height: 1080px; }
+
+.tile { background: var(--card); border-radius: 14px; border: 3px solid transparent; color: #fff;
+    font-size: 30px; padding: 22px; text-align: center; }
+.tile.sel { border-color: var(--cyan); background: #2E3A6E; }
+.focus { background: linear-gradient(90deg, var(--cyan), var(--purple)) !important; border-color: transparent !important; }
+
+/* Login */
+.login { width: 900px; margin: 0 auto; padding-top: 50px; text-align: center; }
+.login img { width: 170px; }
+.login h1, .home h1 { font-size: 64px; margin: 10px 0 30px; }
+.tabs { display: flex; }
+.tabs .tile + .tile { margin-left: 24px; }
+.tabs .tile { flex: 1; }
+.login input { display: block; width: 100%; margin-top: 18px; font-size: 30px; padding: 22px; border-radius: 14px;
+    border: 3px solid transparent; background: var(--card); color: #fff; outline: none; }
+.login input.focus { border-color: var(--cyan); background: #2E3A6E !important; }
+.login .tile.enter { margin-top: 26px; }
+.hint, .status { color: var(--muted); font-size: 26px; margin-top: 22px; }
+.hint { color: var(--cyan); }
+
+/* Home */
+.home { padding: 70px 90px; text-align: center; }
+.home .brand { display: flex; align-items: center; justify-content: center; }
+.home .brand img { margin-right: 24px; }
+.home .brand img { width: 130px; }
+.cards { display: flex; margin-top: 70px; }
+.cards .tile + .tile { margin-left: 40px; }
+.cards .tile { flex: 1; height: 330px; display: flex; flex-direction: column; justify-content: center; font-size: 46px; }
+.cards .tile small { font-size: 32px; color: #dfe3ff; margin-top: 12px; }
+.actions { display: flex; justify-content: center; margin-top: 50px; }
+.actions .tile + .tile { margin-left: 24px; }
+.actions .tile { font-size: 26px; padding: 18px 34px; }
+
+/* Browse */
+.browse { display: flex; padding: 40px; height: 1080px; }
+.browse .right { margin-left: 34px; }
+.browse .left { width: 520px; display: flex; flex-direction: column; }
+.browse .right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.browse h2 { color: var(--cyan); font-size: 46px; margin: 0 0 20px; }
+.search { font-size: 30px; padding: 20px 24px; border-radius: 14px; background: var(--card); color: var(--muted);
+    border: 3px solid transparent; margin-bottom: 20px; }
+.search input { all: unset; width: 100%; color: #fff; }
+.list { flex: 1; overflow: hidden; }
+.row { display: flex; align-items: center; height: 84px; margin-bottom: 10px; padding: 0 22px;
+    border-radius: 12px; background: var(--card); border: 3px solid transparent; font-size: 28px; }
+.row.sel { border-color: var(--cyan); background: #2E3A6E; }
+.row img { margin-right: 18px; width: 90px; height: 60px; object-fit: contain; flex: none; }
+.row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.empty { color: var(--muted); font-size: 30px; padding: 30px; }
+.count { color: var(--muted); font-size: 24px; margin-top: 8px; }
+
+/* Player overlay + toast */
+#toast { position: fixed; left: 60px; bottom: 60px; max-width: 1500px; padding: 22px 34px; border-radius: 14px;
+    background: rgba(11, 15, 31, .88); border-left: 6px solid var(--cyan); font-size: 34px; display: none; z-index: 9; }
