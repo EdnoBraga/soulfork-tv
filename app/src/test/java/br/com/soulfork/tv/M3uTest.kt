@@ -33,6 +33,21 @@ class M3uTest {
     }
 
     @Test
+    fun cacheRoundTripKeepsEveryField() {
+        val items = listOf(
+            Item("Canal\tcom tab", "http://x/l.png", "Notícias", "http://s/live/1.ts", Kind.LIVE),
+            Item("Série", null, "Séries", "", Kind.SERIES, "42"),
+        )
+        val sw = java.io.StringWriter()
+        writeItems(items, sw)
+        val back = readItems(sw.toString().reader().buffered())
+
+        assertEquals(items[1], back[1])
+        assertEquals("Canal com tab", back[0].name)
+        assertEquals(items[0].copy(name = "Canal com tab"), back[0])
+    }
+
+    @Test
     fun groupsLooseEpisodesIntoShowsAndSeasons() {
         fun ep(n: String) = Item(n, null, "Séries | Comédia", "http://s/series/$n.mp4", Kind.EPISODE)
         val shows = groupEpisodes(listOf(ep("The Office S01 E01"), ep("The Office S02E05"), ep("Dark S1 E1"), ep("Avulso")))

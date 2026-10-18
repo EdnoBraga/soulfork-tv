@@ -66,7 +66,7 @@ class LoginActivity : Activity() {
             prefs.server = server.text.toString()
             prefs.user = user.text.toString()
             prefs.pass = pass.text.toString()
-            if (prefs.hasLogin) load() else status("Preencha os campos.")
+            if (prefs.hasLogin) load(refresh = true) else status("Preencha os campos.")
         }
         findViewById<Button>(R.id.enter).setOnClickListener { submit() }
 
@@ -88,7 +88,7 @@ class LoginActivity : Activity() {
             findViewById<TextView>(R.id.phone).text = "Mais fácil pelo celular (mesmo Wi-Fi): abra  http://$ip:${phoneForm!!.port}  e cole o link lá."
         }
 
-        if (prefs.hasLogin) load() else findViewById<View>(R.id.tabM3u).requestFocus()
+        if (prefs.hasLogin) load(intent.getBooleanExtra("refresh", false)) else findViewById<View>(R.id.tabM3u).requestFocus()
     }
 
     private var phoneForm: PhoneForm? = null
@@ -109,12 +109,12 @@ class LoginActivity : Activity() {
 
     private fun status(s: String) { findViewById<TextView>(R.id.status).text = s }
 
-    private fun load() {
+    private fun load(refresh: Boolean) {
         val enter = findViewById<Button>(R.id.enter)
         enter.isEnabled = false
-        status("Carregando sua lista…")
+        status(if (refresh || !Repo.cacheFile(this).exists()) "Baixando sua lista… listas grandes podem levar alguns minutos, só na primeira vez." else "Abrindo sua lista…")
         thread {
-            val r = runCatching { Repo.load(this) }
+            val r = runCatching { Repo.load(this, refresh) }
             runOnUiThread {
                 enter.isEnabled = true
                 r.onSuccess {
@@ -138,8 +138,8 @@ class HomeActivity : Activity() {
         tile(R.id.live, "TV ao Vivo", "${Repo.live.size} canais", Kind.LIVE).requestFocus()
         tile(R.id.movies, "Filmes", "${Repo.movies.size} títulos", Kind.MOVIE)
         tile(R.id.series, "Séries", "${Repo.series.size} títulos", Kind.SERIES)
-        findViewById<Button>(R.id.reload).setOnClickListener { goLogin() }
-        findViewById<Button>(R.id.logout).setOnClickListener { Prefs(this).clearLogin(); goLogin() }
+        findViewById<Button>(R.id.reload).setOnClickListener { goLogin(refresh = true) }
+        findViewById<Button>(R.id.logout).setOnClickListener { Prefs(this).clearLogin(); Repo.cacheFile(this).delete(); goLogin(refresh = false) }
     }
 
     private fun tile(id: Int, title: String, count: String, kind: Kind) = findViewById<Button>(id).apply {
@@ -150,9 +150,9 @@ class HomeActivity : Activity() {
         }
     }
 
-    private fun goLogin() {
+    private fun goLogin(refresh: Boolean) {
         Repo.loaded = false
-        startActivity(Intent(this, LoginActivity::class.java))
+        startActivity(Intent(this, LoginActivity::class.java).putExtra("refresh", refresh))
         finish()
     }
 }

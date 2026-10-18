@@ -10,7 +10,8 @@
         android:icon="@mipmap/ic_launcher"
         android:banner="@drawable/banner"
         android:theme="@style/Theme.SoulFork"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:largeHeap="true">
 
         <activity android:name=".LoginActivity" android:exported="true">
             <intent-filter>

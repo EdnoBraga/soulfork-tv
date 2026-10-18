@@ -39,18 +39,40 @@ object Repo {
         else -> series
     }
 
-    /** Blocking: call off the main thread. */
-    fun load(ctx: Context) {
+    private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
+
+    fun cacheFile(ctx: Context) = java.io.File(ctx.filesDir, "items.tsv")
+
+    /**
+     * Blocking: call off the main thread. Uses the copy saved on the device when there is one
+     * (big lists take minutes to download) and refreshes it in the background once a day.
+     */
+    fun load(ctx: Context, refresh: Boolean) {
         val p = Prefs(ctx)
-        val all: List<Item>
-        if (p.mode == "xtream") {
-            val x = Xtream(p.server, p.user, p.pass)
-            all = x.loadAll()
-            xtream = x
+        xtream = if (p.mode == "xtream") Xtream(p.server, p.user, p.pass) else null
+        val cache = cacheFile(ctx)
+        val all = if (!refresh && cache.exists()) {
+            if (System.currentTimeMillis() - cache.lastModified() > MAX_AGE_MS) {
+                thread(isDaemon = true) { runCatching { save(cache, fetch(p)) } } // shows up on next launch
+            }
+            cache.bufferedReader().use(::readItems)
         } else {
-            all = httpGet(p.m3uUrl).use { parseM3u(it) }
-            xtream = null
+            fetch(p).also { save(cache, it) }
         }
+        apply(all)
+    }
+
+    private fun fetch(p: Prefs): List<Item> =
+        if (p.mode == "xtream") Xtream(p.server, p.user, p.pass).loadAll()
+        else httpGet(p.m3uUrl).use(::parseM3u)
+
+    private fun save(file: java.io.File, items: List<Item>) {
+        val tmp = java.io.File(file.path + ".tmp")
+        tmp.bufferedWriter().use { writeItems(items, it) }
+        tmp.renameTo(file)
+    }
+
+    private fun apply(all: List<Item>) {
         live = all.filter { it.kind == Kind.LIVE }
         movies = all.filter { it.kind == Kind.MOVIE }
         // M3U lists series as loose episodes; fold them into one entry per show, like Xtream does.
@@ -122,7 +144,32 @@ fun httpGet(url: String): BufferedReader {
     throw Exception("Redirecionamentos demais")
 }
 
-private val attrRe = Regex("""([\w-]+)="([^"]*)"""")
+/** One item per line, tab-separated: kind, name, logo, group, url, seriesId. */
+fun writeItems(items: List<Item>, w: java.io.Writer) {
+    fun clean(s: String?) = s.orEmpty().replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+    for (i in items) {
+        w.write("${i.kind.ordinal}\t${clean(i.name)}\t${clean(i.logo)}\t${clean(i.group)}\t${clean(i.url)}\t${clean(i.seriesId)}\n")
+    }
+}
+
+fun readItems(r: BufferedReader): List<Item> {
+    val kinds = Kind.values()
+    val out = ArrayList<Item>()
+    r.forEachLine { line ->
+        val f = line.split('\t')
+        if (f.size == 6) out += Item(f[1], f[2].ifEmpty { null }, f[3], f[4], kinds[f[0].toInt()], f[5].ifEmpty { null })
+    }
+    return out
+}
+
+/** attr="value" from an #EXTINF header; plain indexOf is much faster than a regex on 300k lines. */
+private fun attr(head: String, key: String): String? {
+    val i = head.indexOf("$key=\"", ignoreCase = true)
+    if (i < 0) return null
+    val start = i + key.length + 2
+    val end = head.indexOf('"', start)
+    return if (end < 0) null else head.substring(start, end).ifEmpty { null }
+}
 
 fun kindOf(url: String) = when {
     "/movie/" in url -> Kind.MOVIE
@@ -134,7 +181,7 @@ fun kindOf(url: String) = when {
 fun parseM3u(reader: BufferedReader): List<Item> {
     val out = ArrayList<Item>()
     var name = ""
-    var attrs = emptyMap<String, String>()
+    var head = ""
     reader.forEachLine { raw ->
         val line = raw.trim()
         when {
@@ -145,20 +192,19 @@ fun parseM3u(reader: BufferedReader): List<Item> {
                     if (line[i] == '"') inQuote = !inQuote
                     else if (line[i] == ',' && !inQuote) { comma = i; break }
                 }
-                val head = if (comma >= 0) line.substring(0, comma) else line
+                head = if (comma >= 0) line.substring(0, comma) else line
                 name = if (comma >= 0) line.substring(comma + 1).trim() else ""
-                attrs = attrRe.findAll(head).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
             }
             line.isNotEmpty() && !line.startsWith("#") -> {
                 out += Item(
-                    name = name.ifEmpty { attrs["tvg-name"] ?: line.substringAfterLast('/') },
-                    logo = attrs["tvg-logo"]?.ifEmpty { null },
-                    group = attrs["group-title"]?.ifEmpty { null } ?: "Sem categoria",
+                    name = name.ifEmpty { attr(head, "tvg-name") ?: line.substringAfterLast('/') },
+                    logo = attr(head, "tvg-logo"),
+                    group = attr(head, "group-title") ?: "Sem categoria",
                     url = line,
                     kind = kindOf(line),
                 )
                 name = ""
-                attrs = emptyMap()
+                head = ""
             }
         }
     }
