@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="560dp" android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:orientation="vertical" android:gravity="center_horizontal"
+        android:paddingTop="32dp" android:paddingBottom="32dp">
+
+        <ImageView android:layout_width="120dp" android:layout_height="120dp" android:src="@drawable/logo" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="SoulFork TV" android:textSize="34sp" android:textStyle="bold" />
+        <TextView android:id="@+id/phone" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="12dp"
+            android:gravity="center" android:textColor="@color/cyan" android:textSize="18sp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp" android:orientation="horizontal">
+            <Button android:id="@+id/tabM3u" style="@style/Tile" android:layout_width="0dp"
+                android:layout_height="wrap_content" android:layout_weight="1"
+                android:layout_marginEnd="8dp" android:text="Link M3U" />
+            <Button android:id="@+id/tabXtream" style="@style/Tile" android:layout_width="0dp"
+                android:layout_height="wrap_content" android:layout_weight="1"
+                android:layout_marginStart="8dp" android:text="Xtream Codes" />
+        </LinearLayout>
+
+        <EditText android:id="@+id/m3u" style="@style/Field" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="http://servidor/lista.m3u8"
+            android:inputType="textUri" />
+
+        <EditText android:id="@+id/server" style="@style/Field" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="Servidor (http://servidor:porta)"
+            android:inputType="textUri" />
+        <EditText android:id="@+id/user" style="@style/Field" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="Usuário" android:inputType="text" />
+        <EditText android:id="@+id/pass" style="@style/Field" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:hint="Senha" android:inputType="textPassword" />
+
+        <Button android:id="@+id/enter" style="@style/Tile" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Entrar" />
+
+        <TextView android:id="@+id/status" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:layout_marginTop="16dp"
+            android:textColor="@color/muted" android:textSize="18sp" android:gravity="center" />
+    </LinearLayout>
+</ScrollView>

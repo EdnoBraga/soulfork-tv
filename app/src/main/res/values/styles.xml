@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#0B0F1F</color>
+    <color name="card">#1A2140</color>
+    <color name="cyan">#5EE6E6</color>
+    <color name="purple">#5B2FC9</color>
+    <color name="muted">#9AA3C7</color>
+
+    <style name="Theme.SoulFork" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorAccent">@color/cyan</item>
+        <item name="android:textColor">#FFFFFF</item>
+    </style>
+
+    <!-- Every focusable thing on screen: card that lights up under the remote's focus. -->
+    <style name="Tile">
+        <item name="android:background">@drawable/tile</item>
+        <item name="android:focusable">true</item>
+        <item name="android:clickable">true</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textSize">20sp</item>
+        <item name="android:padding">16dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+
+    <style name="Field">
+        <item name="android:background">@drawable/tile</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textColorHint">@color/muted</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:padding">14dp</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:layout_marginTop">10dp</item>
+    </style>
+</resources>

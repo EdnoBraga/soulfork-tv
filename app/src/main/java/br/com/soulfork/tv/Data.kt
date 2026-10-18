@@ -1,0 +1,278 @@
+package br.com.soulfork.tv
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import kotlin.concurrent.thread
+
+const val USER_AGENT = "Mozilla/5.0 (Linux; Android) SoulForkTV/1.0"
+
+enum class Kind { LIVE, MOVIE, SERIES, EPISODE }
+
+data class Item(
+    val name: String,
+    val logo: String?,
+    val group: String,
+    val url: String,
+    val kind: Kind,
+    val seriesId: String? = null,
+)
+
+/** Everything loaded from the playlist, kept in memory while the app runs. */
+object Repo {
+    var live = emptyList<Item>()
+    var movies = emptyList<Item>()
+    var series = emptyList<Item>()
+    var xtream: Xtream? = null
+    var loaded = false
+
+    /** List the player walks through with channel up/down. */
+    var playlist = emptyList<Item>()
+
+    fun list(kind: Kind) = when (kind) {
+        Kind.LIVE -> live
+        Kind.MOVIE -> movies
+        else -> series
+    }
+
+    /** Blocking: call off the main thread. */
+    fun load(ctx: Context) {
+        val p = Prefs(ctx)
+        val all: List<Item>
+        if (p.mode == "xtream") {
+            val x = Xtream(p.server, p.user, p.pass)
+            all = x.loadAll()
+            xtream = x
+        } else {
+            all = httpGet(p.m3uUrl).use { parseM3u(it) }
+            xtream = null
+        }
+        live = all.filter { it.kind == Kind.LIVE }
+        movies = all.filter { it.kind == Kind.MOVIE }
+        series = all.filter { it.kind == Kind.SERIES || it.kind == Kind.EPISODE }
+        loaded = true
+    }
+}
+
+class Prefs(ctx: Context) {
+    private val sp = ctx.getSharedPreferences("soulfork", Context.MODE_PRIVATE)
+    var mode by str("mode")
+    var m3uUrl by str("m3u")
+    var server by str("server")
+    var user by str("user")
+    var pass by str("pass")
+
+    val hasLogin get() = if (mode == "xtream") server.isNotEmpty() && user.isNotEmpty() else m3uUrl.isNotEmpty()
+
+    var favorites: Set<String>
+        get() = sp.getStringSet("fav", emptySet())!!
+        set(v) = sp.edit().putStringSet("fav", v).apply()
+
+    fun clearLogin() = sp.edit().remove("m3u").remove("server").remove("user").remove("pass").apply()
+
+    private fun str(key: String) = object : kotlin.properties.ReadWriteProperty<Any, String> {
+        override fun getValue(thisRef: Any, property: kotlin.reflect.KProperty<*>) = sp.getString(key, "")!!
+        override fun setValue(thisRef: Any, property: kotlin.reflect.KProperty<*>, value: String) =
+            sp.edit().putString(key, value.trim()).apply()
+    }
+}
+
+/** GET following redirects, including http <-> https (HttpURLConnection won't do that alone). */
+fun httpGet(url: String): BufferedReader {
+    var u = url.trim()
+    repeat(5) {
+        val c = URL(u).openConnection() as HttpURLConnection
+        c.setRequestProperty("User-Agent", USER_AGENT)
+        c.connectTimeout = 15_000
+        c.readTimeout = 60_000
+        c.instanceFollowRedirects = false
+        val code = c.responseCode
+        if (code in 300..399) {
+            u = URL(URL(u), c.getHeaderField("Location")).toString()
+            c.disconnect()
+            return@repeat
+        }
+        if (code != 200) throw Exception("O servidor respondeu $code")
+        return c.inputStream.bufferedReader()
+    }
+    throw Exception("Redirecionamentos demais")
+}
+
+private val attrRe = Regex("""([\w-]+)="([^"]*)"""")
+
+fun kindOf(url: String) = when {
+    "/movie/" in url -> Kind.MOVIE
+    "/series/" in url -> Kind.EPISODE
+    else -> Kind.LIVE
+}
+
+/** Parses #EXTINF lines; the title is whatever follows the first comma outside quotes. */
+fun parseM3u(reader: BufferedReader): List<Item> {
+    val out = ArrayList<Item>()
+    var name = ""
+    var attrs = emptyMap<String, String>()
+    reader.forEachLine { raw ->
+        val line = raw.trim()
+        when {
+            line.startsWith("#EXTINF", ignoreCase = true) -> {
+                var inQuote = false
+                var comma = -1
+                for (i in line.indices) {
+                    if (line[i] == '"') inQuote = !inQuote
+                    else if (line[i] == ',' && !inQuote) { comma = i; break }
+                }
+                val head = if (comma >= 0) line.substring(0, comma) else line
+                name = if (comma >= 0) line.substring(comma + 1).trim() else ""
+                attrs = attrRe.findAll(head).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+            }
+            line.isNotEmpty() && !line.startsWith("#") -> {
+                out += Item(
+                    name = name.ifEmpty { attrs["tvg-name"] ?: line.substringAfterLast('/') },
+                    logo = attrs["tvg-logo"]?.ifEmpty { null },
+                    group = attrs["group-title"]?.ifEmpty { null } ?: "Sem categoria",
+                    url = line,
+                    kind = kindOf(line),
+                )
+                name = ""
+                attrs = emptyMap()
+            }
+        }
+    }
+    return out
+}
+
+/** First LAN IPv4 of this device, so the phone knows where to reach the form. */
+fun localIp(): String? = java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+    .filter { it.isUp && !it.isLoopback }
+    .flatMap { it.inetAddresses.asSequence() }
+    .firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress
+
+/**
+ * Tiny HTTP server so the playlist link can be pasted on a phone instead of typed with the remote.
+ * GET serves the form, POST hands the fields to [onSubmit].
+ */
+class PhoneForm(private val onSubmit: (Map<String, String>) -> Unit) {
+    val port = 8686
+    private val server = java.net.ServerSocket(port)
+
+    fun start() = thread(isDaemon = true) {
+        while (!server.isClosed) {
+            val s = runCatching { server.accept() }.getOrNull() ?: break
+            thread(isDaemon = true) { runCatching { handle(s) } }
+        }
+    }
+
+    fun stop() = server.close()
+
+    private fun handle(s: java.net.Socket): Unit = s.use {
+        val r = s.getInputStream().bufferedReader()
+        val request = r.readLine() ?: return
+        var length = 0
+        while (true) {
+            val h = r.readLine() ?: break
+            if (h.isEmpty()) break
+            if (h.startsWith("Content-Length:", true)) length = h.substringAfter(':').trim().toInt()
+        }
+        var page = FORM
+        if (request.startsWith("POST") && length in 1..100_000) {
+            // Form bodies are percent-encoded ASCII, so chars == bytes.
+            val buf = CharArray(length)
+            var n = 0
+            while (n < length) { val k = r.read(buf, n, length - n); if (k < 0) break; n += k }
+            val fields = String(buf, 0, n).split('&').filter { '=' in it }.associate {
+                java.net.URLDecoder.decode(it.substringBefore('='), "UTF-8") to java.net.URLDecoder.decode(it.substringAfter('='), "UTF-8")
+            }
+            onSubmit(fields)
+            page = DONE
+        }
+        val body = page.toByteArray()
+        s.getOutputStream().apply {
+            write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            write(body)
+            flush()
+        }
+    }
+
+    private companion object {
+        const val STYLE = """<meta name="viewport" content="width=device-width,initial-scale=1"><style>
+body{font-family:sans-serif;background:#0B0F1F;color:#fff;margin:0;padding:24px;max-width:520px}
+h1{color:#5EE6E6}h2{margin-top:28px}input,button{width:100%;box-sizing:border-box;padding:14px;margin:6px 0;
+border-radius:10px;border:0;font-size:16px}input{background:#1A2140;color:#fff}
+button{background:linear-gradient(90deg,#5EE6E6,#5B2FC9);color:#fff;font-weight:bold}</style>"""
+        const val FORM = """<!doctype html><html><head>$STYLE<title>SoulFork TV</title></head><body>
+<h1>SoulFork TV</h1><p>Cole aqui e toque em Enviar. A TV carrega sozinha.</p>
+<h2>Link M3U</h2><form method="post"><input type="hidden" name="mode" value="m3u">
+<input name="m3u" type="url" placeholder="http://servidor/lista.m3u8" required><button>Enviar para a TV</button></form>
+<h2>Xtream Codes</h2><form method="post"><input type="hidden" name="mode" value="xtream">
+<input name="server" placeholder="http://servidor:porta" required><input name="user" placeholder="Usuário" required>
+<input name="pass" placeholder="Senha" required><button>Enviar para a TV</button></form></body></html>"""
+        const val DONE = """<!doctype html><html><head>$STYLE</head><body><h1>Enviado!</h1>
+<p>Olhe a TV: a lista está carregando.</p><p><a style="color:#5EE6E6" href="/">Enviar outro</a></p></body></html>"""
+    }
+}
+
+/** Xtream Codes player_api.php client. */
+class Xtream(server: String, private val user: String, private val pass: String) {
+    private val base = server.trim().trimEnd('/').let { if ("://" in it) it else "http://$it" }
+
+    private fun api(action: String = "", extra: String = ""): String {
+        val q = "username=${enc(user)}&password=${enc(pass)}" + (if (action.isEmpty()) "" else "&action=$action") + extra
+        return httpGet("$base/player_api.php?$q").use { it.readText() }
+    }
+
+    private fun categories(action: String): Map<String, String> {
+        val arr = JSONArray(api(action))
+        return (0 until arr.length()).associate { arr.getJSONObject(it).let { c -> c.optString("category_id") to c.optString("category_name") } }
+    }
+
+    private fun streams(action: String, cats: Map<String, String>, make: (JSONObject, String) -> Item): List<Item> {
+        val arr = JSONArray(api(action))
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            make(o, cats[o.optString("category_id")] ?: "Sem categoria")
+        }
+    }
+
+    fun loadAll(): List<Item> {
+        val auth = JSONObject(api()).optJSONObject("user_info")
+        if (auth?.optString("auth") != "1") throw Exception("Usuário ou senha inválidos")
+        val live = streams("get_live_streams", categories("get_live_categories")) { o, g ->
+            Item(o.optString("name"), o.optString("stream_icon").ifEmpty { null }, g,
+                "$base/live/$user/$pass/${o.optString("stream_id")}.ts", Kind.LIVE)
+        }
+        val vod = streams("get_vod_streams", categories("get_vod_categories")) { o, g ->
+            Item(o.optString("name"), o.optString("stream_icon").ifEmpty { null }, g,
+                "$base/movie/$user/$pass/${o.optString("stream_id")}.${o.optString("container_extension", "mp4")}", Kind.MOVIE)
+        }
+        val series = streams("get_series", categories("get_series_categories")) { o, g ->
+            Item(o.optString("name"), o.optString("cover").ifEmpty { null }, g, "", Kind.SERIES, o.optString("series_id"))
+        }
+        return live + vod + series
+    }
+
+    fun episodes(seriesId: String): List<Item> {
+        // "episodes" is an object keyed by season, or an empty array when there are none.
+        val eps = JSONObject(api("get_series_info", "&series_id=$seriesId")).opt("episodes") as? JSONObject ?: return emptyList()
+        val out = ArrayList<Item>()
+        for (season in eps.keys().asSequence().sortedBy { it.toIntOrNull() ?: 0 }) {
+            val arr = eps.getJSONArray(season)
+            for (i in 0 until arr.length()) {
+                val e = arr.getJSONObject(i)
+                out += Item(
+                    "T$season E${e.optString("episode_num")} · ${e.optString("title")}",
+                    e.optJSONObject("info")?.optString("movie_image")?.ifEmpty { null },
+                    "Temporada $season",
+                    "$base/series/$user/$pass/${e.optString("id")}.${e.optString("container_extension", "mp4")}",
+                    Kind.EPISODE,
+                )
+            }
+        }
+        return out
+    }
+
+    private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+}

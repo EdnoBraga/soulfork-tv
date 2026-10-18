@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape>
+            <corners android:radius="10dp" />
+            <gradient android:angle="0" android:startColor="@color/cyan" android:endColor="@color/purple" />
+        </shape>
+    </item>
+    <item android:state_selected="true">
+        <shape>
+            <corners android:radius="10dp" />
+            <solid android:color="#2E3A6E" />
+            <stroke android:width="2dp" android:color="@color/cyan" />
+        </shape>
+    </item>
+    <item>
+        <shape>
+            <corners android:radius="10dp" />
+            <solid android:color="@color/card" />
+        </shape>
+    </item>
+</selector>

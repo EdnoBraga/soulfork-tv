@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="horizontal" android:padding="24dp">
+
+    <LinearLayout android:layout_width="320dp" android:layout_height="match_parent"
+        android:orientation="vertical">
+        <TextView android:id="@+id/title" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:textSize="28sp" android:textStyle="bold"
+            android:textColor="@color/cyan" android:paddingBottom="12dp" />
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/groups"
+            android:layout_width="match_parent" android:layout_height="match_parent" />
+    </LinearLayout>
+
+    <LinearLayout android:layout_width="0dp" android:layout_height="match_parent"
+        android:layout_weight="1" android:layout_marginStart="20dp" android:orientation="vertical">
+        <EditText android:id="@+id/search" style="@style/Field" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="0dp"
+            android:hint="Buscar…" android:inputType="text" android:imeOptions="actionSearch" />
+        <TextView android:id="@+id/empty" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:padding="24dp" android:textSize="18sp"
+            android:textColor="@color/muted" android:visibility="gone" />
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/items"
+            android:layout_width="match_parent" android:layout_height="match_parent"
+            android:layout_marginTop="12dp" />
+    </LinearLayout>
+</LinearLayout>
