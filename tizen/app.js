@@ -255,6 +255,43 @@ async function loadRepo(refresh, onProgress) {
   await saveCache(all).catch(function (e) { console.warn('cache save failed', e); });
 }
 
+/** Season, then episode number ("Temporada 2" + "... S02 E05" / "T2 E5 · ..."). */
+function byEpisode(a, b) {
+  function num(s, re) { var m = re.exec(s); return m ? parseInt(m[1], 10) : 0; }
+  return num(a[I_GROUP], /(\d+)/) - num(b[I_GROUP], /(\d+)/) ||
+    num(a[I_NAME], /[Ee](\d+)(?!.*[Ee]\d)/) - num(b[I_NAME], /[Ee](\d+)(?!.*[Ee]\d)/);
+}
+
+// ---------- EPG (Xtream short EPG: now / next) ----------
+/** Xtream credentials: from the login, or from an M3U link of the get.php?username=&password= kind. */
+function xtreamCreds() {
+  if (prefs.get('mode') === 'xtream') return { base: xtreamBase(), user: prefs.get('user'), pass: prefs.get('pass') };
+  var m = /^(https?:\/\/[^\/]+)\/get\.php\?(.*)$/i.exec(prefs.get('m3u').trim());
+  if (!m) return null;
+  var q = {};
+  m[2].split('&').forEach(function (kv) { var p = kv.split('='); q[p[0]] = decodeURIComponent(p[1] || ''); });
+  return q.username && q.password ? { base: m[1], user: q.username, pass: q.password } : null;
+}
+
+function b64utf8(s) { try { return decodeURIComponent(escape(atob(s))); } catch (e) { return s; } }
+
+var epgCache = new Map();
+/** "Agora: X (23:30–01:15)\nA seguir: Y", or '' when the server has no guide for the channel. */
+async function epgNow(it) {
+  var c = xtreamCreds(), id = /\/(\d+)(\.\w+)?$/.exec(it[I_URL]);
+  if (!c || !id) return '';
+  var hit = epgCache.get(id[1]);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.text;
+  var d = await getJson(c.base + '/player_api.php?username=' + encodeURIComponent(c.user) + '&password=' +
+    encodeURIComponent(c.pass) + '&action=get_short_epg&stream_id=' + id[1] + '&limit=2');
+  if (typeof d === 'string') d = JSON.parse(b64utf8(d)); // some panels base64 the whole answer
+  var text = (d.epg_listings || []).map(function (e, i) {
+    return (i ? 'A seguir: ' : 'Agora: ') + b64utf8(e.title) + ' (' + String(e.start).substr(11, 5) + '–' + String(e.end).substr(11, 5) + ')';
+  }).join('\n');
+  epgCache.set(id[1], { at: Date.now(), text: text });
+  return text;
+}
+
 function episodesOf(sid) {
   if (sid.indexOf('m3u:') === 0) return Promise.resolve(repo.shows.get(sid.substring(4)) || []);
   return xtreamEpisodes(sid);
@@ -412,24 +449,34 @@ function Home() {
 var ROWS = 9; // visible rows per list
 
 /** Categories on the left, items on the right; used for live, movies, series and one series' episodes. */
-function Browse(title, items, loading) {
+function Browse(title, items, loading, episodes) {
   var all = items || [], groups = [], shown = [], cur = 1, col = 0, gi = 1, ii = 0, q = '', msg = loading || '';
+  var epgTimer = 0;
 
   function key(it) { return it[I_SID] ? 'series:' + it[I_SID] : it[I_URL]; }
   function setData(list) {
-    all = list;
     var seen = new Set();
-    groups = ['★ Favoritos', 'Todos'];
+    if (episodes) {
+      // A series: only its seasons on the left, opening on the first one, episodes in order.
+      all = list.slice().sort(byEpisode);
+      groups = [];
+      cur = gi = 0;
+      col = 1;
+    } else {
+      all = list;
+      groups = ['★ Favoritos', 'Todos'];
+      var favs = favorites();
+      cur = gi = all.some(function (it) { return favs.has(key(it)); }) ? 0 : 1;
+    }
     all.forEach(function (it) { if (!seen.has(it[I_GROUP])) { seen.add(it[I_GROUP]); groups.push(it[I_GROUP]); } });
-    var favs = favorites();
-    cur = gi = all.some(function (it) { return favs.has(key(it)); }) ? 0 : 1;
     filter();
   }
   function filter() {
     var favs = favorites(), needle = q.toLowerCase(), g = groups[cur];
     shown = all.filter(function (it) {
-      if (cur === 0 && !favs.has(key(it))) return false;
-      if (cur > 1 && it[I_GROUP] !== g) return false;
+      if (episodes) { if (it[I_GROUP] !== g) return false; }
+      else if (cur === 0 && !favs.has(key(it))) return false;
+      else if (cur > 1 && it[I_GROUP] !== g) return false;
       return !needle || it[I_NAME].toLowerCase().indexOf(needle) >= 0;
     });
     ii = 0;
@@ -444,14 +491,17 @@ function Browse(title, items, loading) {
     }).join('');
   }
   function render() {
-    var empty = msg || (shown.length ? '' : cur === 0 ? 'Sem favoritos ainda. Segure OK num item para favoritar.' : 'Nada aqui.');
+    var empty = msg || (shown.length ? '' : cur === 0 && !episodes ? 'Sem favoritos ainda. Segure OK num item para favoritar.' : 'Nada aqui.');
+    var liveList = shown.length && shown[ii][I_KIND] === LIVE;
     app.innerHTML = '<div class="browse"><div class="left"><h2>' + esc(title) + '</h2><div class="list">' +
       rows(groups, col === 0 ? gi : cur, col === 0, function (g) { return g; }) + '</div></div>' +
       '<div class="right"><div class="search' + (col === 2 ? ' focus' : '') + '"><input id="q" placeholder="Buscar…" value="' + esc(q) + '"></div>' +
       (empty ? '<div class="empty">' + esc(empty) + '</div>'
         : '<div class="list">' + rows(shown, ii, col === 1, function (it) { return it[I_NAME]; },
-          function (it) { return it[I_LOGO]; }) + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>') +
+          function (it) { return it[I_LOGO]; }) + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>' +
+          (liveList ? '<div class="epg" id="epg"></div>' : '')) +
       '</div></div>';
+    if (liveList) showEpg();
     var qi = document.getElementById('q'), timer = 0;
     qi.addEventListener('input', function () {
       clearTimeout(timer);
@@ -459,10 +509,21 @@ function Browse(title, items, loading) {
     });
     qi.addEventListener('blur', function () { q = qi.value; filter(); col = shown.length ? 1 : 2; render(); });
   }
+  /** Guide for the highlighted channel, fetched only once the remote stops moving. */
+  function showEpg() {
+    var it = shown[ii];
+    clearTimeout(epgTimer);
+    epgTimer = setTimeout(function () {
+      epgNow(it).then(function (text) {
+        var el = document.getElementById('epg');
+        if (el && shown[ii] === it) el.textContent = text;
+      }, function () {});
+    }, 500);
+  }
   function open() {
     var it = shown[ii];
     if (it[I_KIND] === SERIES) {
-      var b = Browse(it[I_NAME], [], 'Carregando episódios…');
+      var b = Browse(it[I_NAME], [], 'Carregando episódios…', true);
       show(b);
       episodesOf(it[I_SID]).then(b.setData, function (e) { b.fail('Não deu para carregar: ' + (e.message || e)); });
     } else show(Player(shown, ii));
@@ -516,6 +577,7 @@ function Player(list, start) {
     stop();
     paused = false;
     toast(live() ? (idx + 1) + '. ' + it[I_NAME] : it[I_NAME]);
+    if (live()) showGuide(5000);
     if (AV) {
       try {
         webapis.avplay.open(it[I_URL]);
@@ -534,6 +596,12 @@ function Player(list, start) {
       vid.src = it[I_URL];
       vid.play().catch(function (e) { toast('Não foi possível tocar (' + e.message + ')', 6000); });
     }
+  }
+  function showGuide(ms) {
+    var it = item();
+    epgNow(it).then(function (text) {
+      if (item() === it) toast((idx + 1) + '. ' + it[I_NAME] + (text ? '\n' + text : ''), ms);
+    }, function () {});
   }
   function seek(ms) {
     if (AV) { try { ms > 0 ? webapis.avplay.jumpForward(ms) : webapis.avplay.jumpBackward(-ms); } catch (e) {} }
@@ -555,7 +623,7 @@ function Player(list, start) {
       if (live()) {
         if (k === KEY.UP || k === KEY.CHUP) { idx = (idx - 1 + list.length) % list.length; play(); }
         else if (k === KEY.DOWN || k === KEY.CHDOWN) { idx = (idx + 1) % list.length; play(); }
-        else if (k === KEY.ENTER) toast((idx + 1) + '. ' + item()[I_NAME]);
+        else if (k === KEY.ENTER) { toast((idx + 1) + '. ' + item()[I_NAME]); showGuide(6000); }
         return;
       }
       if (k === KEY.ENTER || k === KEY.PLAYPAUSE || k === KEY.PLAY || k === KEY.PAUSE) togglePause();
