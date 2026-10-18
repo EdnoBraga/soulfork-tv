@@ -13,6 +13,15 @@ Player de IPTV para Fire Stick / Android TV. Aceita link M3U/M3U8 ou login Xtrea
 Link do APK (sempre a versão mais nova):
 `https://github.com/EdnoBraga/soulfork-tv/releases/latest/download/SoulForkTV.apk`
 
+## Instalar no Windows
+
+Baixe e execute `https://github.com/EdnoBraga/soulfork-tv/releases/latest/download/SoulForkTV-Setup.exe`.
+O instalador não tem assinatura paga: no aviso "O Windows protegeu o computador", clique em **Mais informações → Executar assim mesmo**.
+
+- Teclado: setas, Enter (OK), Esc (voltar), PageUp/PageDown (trocar canal no Multitela), **F11** tela cheia, **V** abre no VLC o que o player do app não tocar.
+- Mouse: clique = OK, botão direito = segurar OK (favoritar / tirar do Multitela), rolagem = subir e descer.
+- Código: `windows/` (Electron) usa o mesmo app web de `tizen/`. Gerar o instalador: `cd windows && npm install && npm run dist`.
+
 ## Instalar na Smart TV Samsung (Tizen)
 
 O app da Samsung fica em `tizen/` e é instalado pelo PC, com a TV em modo desenvolvedor.
