@@ -25,7 +25,7 @@ import androidx.media3.ui.PlayerView
 /**
  * Up to 4 live channels at once. Shows one more cell than there are channels (to add the next one):
  * 1 cell full screen, 2 side by side, 3-4 in a 2x2 grid. Only the selected cell has sound.
- * OK on an empty cell picks a channel, OK on a channel opens it full screen, holding OK removes it.
+ * OK picks or swaps the cell's channel, CH+/CH- (or rewind/fast-forward) zaps it, holding OK removes it.
  */
 @OptIn(UnstableApi::class)
 class MultiActivity : Activity() {
@@ -154,6 +154,9 @@ class MultiActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
                 move(code); return true
             }
+            // The Fire TV remote has no CH+/CH-: rewind / fast-forward zap the selected cell too.
+            KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_REWIND -> { zap(-1); return true }
+            KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { zap(1); return true }
         }
         return super.onKeyDown(code, e)
     }
@@ -193,27 +196,44 @@ class MultiActivity : Activity() {
         if (next < n) { sel = next; layoutCells() }
     }
 
+    private var pickCell = 0
+
+    /** OK: choose the channel of the selected cell (adds on the empty cell, swaps on a filled one). */
     private fun ok() {
-        val ch = channels.getOrNull(sel)
-        if (ch == null) {
-            startActivityForResult(Intent(this, BrowseActivity::class.java)
-                .putExtra("kind", Kind.LIVE.name).putExtra("title", "Escolha o canal").putExtra("pick", true), PICK)
-        } else {
-            Repo.playlist = channels.toList()
-            startActivity(Intent(this, PlayerActivity::class.java).putExtra("index", sel))
-        }
+        pickCell = sel
+        startActivityForResult(Intent(this, BrowseActivity::class.java).putExtra("kind", Kind.LIVE.name)
+            .putExtra("title", if (sel < channels.size) "Trocar o canal" else "Escolha o canal").putExtra("pick", true), PICK)
     }
 
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
         val url = data?.getStringExtra("url") ?: return
         if (request != PICK || result != RESULT_OK) return
-        // The server refuses the same channel twice at the same time.
-        if (channels.any { it.url == url }) { Toast.makeText(this, "Esse canal já está na tela", Toast.LENGTH_SHORT).show(); return }
         val ch = Repo.live.firstOrNull { it.url == url } ?: return
-        channels.add(ch)
-        sel = channels.lastIndex
+        setChannel(pickCell, ch)
+    }
+
+    /** Puts [ch] in cell [i] (adding or replacing). The server refuses the same channel twice at the same time. */
+    private fun setChannel(i: Int, ch: Item): Boolean {
+        if (channels.any { it.url == ch.url }) { Toast.makeText(this, "Esse canal já está na tela", Toast.LENGTH_SHORT).show(); return false }
+        if (i < channels.size) channels[i] = ch else channels.add(ch)
+        sel = minOf(i, channels.lastIndex)
         save()
+        return true
+    }
+
+    /** Next/previous channel of the list in the selected cell, skipping ones already on screen. */
+    private fun zap(d: Int) {
+        val ch = channels.getOrNull(sel) ?: return
+        val n = Repo.live.size
+        val at = Repo.live.indexOf(ch)
+        for (s in 1 until n) {
+            val next = Repo.live[((at + d * s) % n + n) % n]
+            if (channels.none { it.url == next.url }) { setChannel(sel, next); break }
+        }
+        startPlayer(sel)
+        layoutCells()
+        Toast.makeText(this, channels[sel].name, Toast.LENGTH_SHORT).show()
     }
 
     private companion object { const val PICK = 1 }

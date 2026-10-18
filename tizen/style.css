@@ -77,14 +77,6 @@ body.playing #app { display: none; }
 .details h3 { font-size: 42px; margin: 0 0 12px; }
 .details .meta { color: var(--cyan); font-size: 26px; margin-bottom: 22px; }
 .details p { font-size: 27px; line-height: 1.45; color: #dfe3ff; margin: 0; max-height: 700px; overflow: hidden; }
-/* Multiscreen */
-.multi { position: relative; width: 1920px; height: 1080px; background: #000; }
-.cell { position: absolute; border: 3px solid #1A2140; background: #000; overflow: hidden; }
-.cell.sel { border: 8px solid var(--cyan); }
-.cell video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-.cell .hint { position: absolute; top: 0; left: 0; right: 0; bottom: 0; align-items: center; justify-content: center;
-    color: var(--muted); font-size: 40px; }
-.cell .label { position: absolute; left: 0; bottom: 0; padding: 10px 20px; font-size: 28px; background: rgba(0, 0, 0, .7); }
 .epg { color: #dfe3ff; font-size: 28px; margin-top: 12px; min-height: 80px; white-space: pre-line; }
 #toast { white-space: pre-line; }
 
