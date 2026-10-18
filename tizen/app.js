@@ -47,7 +47,23 @@ function saveFavorites(set) { prefs.set('fav', JSON.stringify(Array.from(set)));
 // ---------- items ----------
 // Compact arrays instead of objects: big lists have ~300k entries and TVs are short on memory.
 var LIVE = 0, MOVIE = 1, SERIES = 2, EPISODE = 3;
-var I_KIND = 0, I_NAME = 1, I_LOGO = 2, I_GROUP = 3, I_URL = 4, I_SID = 5;
+var I_KIND = 0, I_NAME = 1, I_LOGO = 2, I_GROUP = 3, I_URL = 4, I_SID = 5,
+  I_GENRE = 6, I_YEAR = 7, I_RATING = 8, I_PLOT = 9; // the last four only come from the Xtream API
+
+/** TMDB's English TV genres -> the names the list already uses for movies. */
+var GENRE_PT = {
+  'Action & Adventure': ['Ação', 'Aventura'], 'Sci-Fi & Fantasy': ['Ficção científica', 'Fantasia'],
+  'War & Politics': ['Guerra', 'Política'], 'Soap': ['Novela'], 'Kids': ['Infantil'], 'News': ['Notícias'],
+  'Talk': ['Talk show'], 'Reality': ['Reality show'], 'Comedia': ['Comédia'],
+};
+
+var THIS_YEAR = new Date().getFullYear();
+/** Last plausible year in a title: "Blade Runner 2049 (2017)" -> 2017. */
+function yearOf(name) {
+  var m = String(name).match(/\b(19|20)\d{2}\b/g) || [];
+  for (var i = m.length - 1; i >= 0; i--) { var y = parseInt(m[i], 10); if (y <= THIS_YEAR + 1) return y; }
+  return 0;
+}
 
 function kindOf(url) {
   if (url.indexOf('/movie/') >= 0) return MOVIE;
@@ -109,7 +125,18 @@ function groupEpisodes(eps) {
 async function getJson(url) {
   var r = await fetch(url);
   if (!r.ok) throw new Error('o servidor respondeu ' + r.status);
-  return r.json();
+  var d = await r.json();
+  return typeof d === 'string' ? JSON.parse(b64utf8(d)) : d; // some panels base64 the whole answer
+}
+
+function b64utf8(s) {
+  try {
+    var bin = atob(s);
+    if (typeof TextDecoder === 'undefined') return decodeURIComponent(escape(bin));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch (e) { return s; }
 }
 
 /** Streams a big text response line by line so a 130 MB list never sits in memory as one string. */
@@ -135,12 +162,25 @@ function xtreamBase() {
   return s.indexOf('://') >= 0 ? s : 'http://' + s;
 }
 function xtreamApi(action, extra) {
-  return getJson(xtreamBase() + '/player_api.php?username=' + encodeURIComponent(prefs.get('user')) +
-    '&password=' + encodeURIComponent(prefs.get('pass')) + (action ? '&action=' + action : '') + (extra || ''));
+  var c = xtreamCreds();
+  return getJson(c.base + '/player_api.php?username=' + encodeURIComponent(c.user) +
+    '&password=' + encodeURIComponent(c.pass) + (action ? '&action=' + action : '') + (extra || ''));
+}
+
+/** Plot/genre/date/rating of one movie, for the details panel. */
+var vodInfoCache = new Map();
+async function vodInfo(it) {
+  var id = /\/(\d+)\.\w+$/.exec(it[I_URL]);
+  if (!id) return null;
+  if (!vodInfoCache.has(id[1])) {
+    var d = await xtreamApi('get_vod_info', '&vod_id=' + id[1]);
+    vodInfoCache.set(id[1], (d && d.info) || {});
+  }
+  return vodInfoCache.get(id[1]);
 }
 
 async function fetchXtream(onProgress) {
-  var b = xtreamBase(), u = prefs.get('user'), p = prefs.get('pass');
+  var c = xtreamCreds(), b = c.base, u = c.user, p = c.pass;
   var auth = await xtreamApi();
   if (!auth.user_info || String(auth.user_info.auth) !== '1') throw new Error('usuário ou senha inválidos');
   var out = [];
@@ -155,22 +195,26 @@ async function fetchXtream(onProgress) {
   });
   await section('get_vod_categories', 'get_vod_streams', function (o, g) {
     return [MOVIE, o.name, o.stream_icon || '', g,
-      b + '/movie/' + u + '/' + p + '/' + o.stream_id + '.' + (o.container_extension || 'mp4'), ''];
+      b + '/movie/' + u + '/' + p + '/' + o.stream_id + '.' + (o.container_extension || 'mp4'), '',
+      '', yearOf(o.name), o.rating || '', ''];
   });
   await section('get_series_categories', 'get_series', function (o, g) {
-    return [SERIES, o.name, o.cover || '', g, '', String(o.series_id)];
+    return [SERIES, o.name, o.cover || '', g, '', String(o.series_id),
+      o.genre || '', parseInt(String(o.releaseDate || '').substr(0, 4), 10) || yearOf(o.name), o.rating || '', o.plot || ''];
   });
   return out;
 }
 
 async function xtreamEpisodes(sid) {
-  var b = xtreamBase(), u = prefs.get('user'), p = prefs.get('pass');
+  var c = xtreamCreds(), b = c.base, u = c.user, p = c.pass;
   var info = await xtreamApi('get_series_info', '&series_id=' + sid);
   var eps = info.episodes, out = [];
   if (!eps || Array.isArray(eps)) return out; // empty series come back as []
   Object.keys(eps).sort(function (a, c) { return a - c; }).forEach(function (season) {
     eps[season].forEach(function (e) {
-      out.push([EPISODE, 'T' + season + ' E' + e.episode_num + ' · ' + (e.title || ''),
+      // Titles often repeat the show: "Pinky e o Cérebro - S01E01 - Ratos" -> "Ratos".
+      var t = String(e.title || '').replace(/^.*?S\d+\s*E\d+\s*[-–:]?\s*/i, '');
+      out.push([EPISODE, 'E' + e.episode_num + (t ? ' · ' + t : ''),
         (e.info && e.info.movie_image) || '', 'Temporada ' + season,
         b + '/series/' + u + '/' + p + '/' + e.id + '.' + (e.container_extension || 'mp4'), '']);
     });
@@ -179,7 +223,8 @@ async function xtreamEpisodes(sid) {
 }
 
 async function fetchAll(onProgress) {
-  if (prefs.get('mode') === 'xtream') return fetchXtream(onProgress);
+  // get.php links carry Xtream credentials: the API is faster than the M3U and brings genre, year and plot.
+  if (xtreamCreds()) return fetchXtream(onProgress);
   var out = [];
   await fetchLines(prefs.get('m3u').trim(), m3uParser(out), function () { if (onProgress) onProgress(out.length); });
   return out;
@@ -187,6 +232,7 @@ async function fetchAll(onProgress) {
 
 // ---------- cache (IndexedDB, in chunks) ----------
 var CHUNK = 5000;
+var CACHE_VERSION = '2'; // 2: genre, year, rating and plot from the Xtream API
 function openDb() {
   return new Promise(function (res, rej) {
     var r = indexedDB.open('soulfork', 1);
@@ -210,6 +256,7 @@ async function saveCache(items) {
     for (var i = 0, n = 0; i < items.length; i += CHUNK, n++) s.put(items.slice(i, i + CHUNK), n);
   });
   prefs.set('cachedAt', String(Date.now()));
+  prefs.set('cacheVersion', CACHE_VERSION);
 }
 async function loadCache() {
   var db = await openDb();
@@ -247,7 +294,8 @@ function applyItems(all) {
 
 /** Opens from the copy saved on the TV when there is one; refreshes it in the background once a day. */
 async function loadRepo(refresh, onProgress) {
-  var cachedAt = Number(prefs.get('cachedAt'));
+  // Bump CACHE_VERSION when the saved item format changes, so old copies are downloaded again.
+  var cachedAt = prefs.get('cacheVersion') === CACHE_VERSION ? Number(prefs.get('cachedAt')) : 0;
   if (!refresh && cachedAt) {
     var cached = await loadCache();
     if (cached.length) {
@@ -281,18 +329,14 @@ function xtreamCreds() {
   return q.username && q.password ? { base: m[1], user: q.username, pass: q.password } : null;
 }
 
-function b64utf8(s) { try { return decodeURIComponent(escape(atob(s))); } catch (e) { return s; } }
-
 var epgCache = new Map();
 /** "Agora: X (23:30–01:15)\nA seguir: Y", or '' when the server has no guide for the channel. */
 async function epgNow(it) {
-  var c = xtreamCreds(), id = /\/(\d+)(\.\w+)?$/.exec(it[I_URL]);
-  if (!c || !id) return '';
+  var id = /\/(\d+)(\.\w+)?$/.exec(it[I_URL]);
+  if (!xtreamCreds() || !id) return '';
   var hit = epgCache.get(id[1]);
   if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.text;
-  var d = await getJson(c.base + '/player_api.php?username=' + encodeURIComponent(c.user) + '&password=' +
-    encodeURIComponent(c.pass) + '&action=get_short_epg&stream_id=' + id[1] + '&limit=2');
-  if (typeof d === 'string') d = JSON.parse(b64utf8(d)); // some panels base64 the whole answer
+  var d = await xtreamApi('get_short_epg', '&stream_id=' + id[1] + '&limit=2');
   var text = (d.epg_listings || []).map(function (e, i) {
     return (i ? 'A seguir: ' : 'Agora: ') + b64utf8(e.title) + ' (' + String(e.start).substr(11, 5) + '–' + String(e.end).substr(11, 5) + ')';
   }).join('\n');
@@ -454,16 +498,29 @@ function Home() {
   };
 }
 
-var ROWS = 9; // visible rows per list
+var ROWS = 9;      // visible rows in list mode (live channels, episodes)
+var COLS = 3;      // poster grid for movies and series: 3 x 3
+var GRID_ROWS = 3;
 
-/** Categories on the left, items on the right; used for live, movies, series and one series' episodes. */
+/** Categories on the left; a list (live, episodes) or a poster grid with details (movies, series) on the right. */
 function Browse(title, items, loading, episodes) {
-  var all = items || [], groups = [], shown = [], cur = 1, col = 0, gi = 1, ii = 0, q = '', msg = loading || '';
-  var epgTimer = 0;
+  var all = [], groups = [], shown = [], cur = 1, col = 0, gi = 1, ii = 0, q = '', msg = loading || '';
+  var grid = false, detailTimer = 0;
 
   function key(it) { return it[I_SID] ? 'series:' + it[I_SID] : it[I_URL]; }
+  function group(label, test, sort) { return { label: label, test: test, sort: sort }; }
+  function byGroup(g) { return function (it) { return it[I_GROUP] === g; }; }
+  function genres(it) {
+    var out = [];
+    (it[I_GENRE] ? it[I_GENRE].split(/\s*[,\/]\s*/) : []).forEach(function (g) {
+      (GENRE_PT[g] || [g]).forEach(function (x) { if (out.indexOf(x) < 0) out.push(x); });
+    });
+    return out;
+  }
+
   function setData(list) {
     var seen = new Set();
+    grid = !episodes && list.length > 0 && (list[0][I_KIND] === MOVIE || list[0][I_KIND] === SERIES);
     if (episodes) {
       // A series: only its seasons on the left, opening on the first one, episodes in order.
       all = list.slice().sort(byEpisode);
@@ -472,23 +529,41 @@ function Browse(title, items, loading, episodes) {
       col = 1;
     } else {
       all = list;
-      groups = ['★ Favoritos', 'Todos'];
       var favs = favorites();
+      groups = [group('★ Favoritos', function (it, f) { return f.has(key(it)); }), group('Todos', function () { return true; })];
+      if (grid) groups.push(group('Mais novos', function (it) { return it[I_YEAR] > 0; }, function (a, b) { return b[I_YEAR] - a[I_YEAR]; }));
       cur = gi = all.some(function (it) { return favs.has(key(it)); }) ? 0 : 1;
     }
-    all.forEach(function (it) { if (!seen.has(it[I_GROUP])) { seen.add(it[I_GROUP]); groups.push(it[I_GROUP]); } });
+    all.forEach(function (it) {
+      if (!seen.has(it[I_GROUP])) { seen.add(it[I_GROUP]); groups.push(group(it[I_GROUP], byGroup(it[I_GROUP]))); }
+    });
+    if (grid) {
+      // Genres from the server (series), most common first, then release years, newest first.
+      var count = new Map(), years = new Set();
+      all.forEach(function (it) {
+        genres(it).forEach(function (g) { if (g) count.set(g, (count.get(g) || 0) + 1); });
+        if (it[I_YEAR]) years.add(it[I_YEAR]);
+      });
+      Array.from(count).sort(function (a, b) { return b[1] - a[1]; }).forEach(function (e) {
+        groups.push(group('Gênero · ' + e[0], function (it) { return genres(it).indexOf(e[0]) >= 0; }));
+      });
+      Array.from(years).sort(function (a, b) { return b - a; }).forEach(function (y) {
+        groups.push(group('Ano ' + y, function (it) { return it[I_YEAR] === y; }));
+      });
+    }
     filter();
   }
   function filter() {
     var favs = favorites(), needle = q.toLowerCase(), g = groups[cur];
+    ii = 0;
+    if (!g) { shown = []; return; } // episodes still loading
     shown = all.filter(function (it) {
-      if (episodes) { if (it[I_GROUP] !== g) return false; }
-      else if (cur === 0 && !favs.has(key(it))) return false;
-      else if (cur > 1 && it[I_GROUP] !== g) return false;
-      return !needle || it[I_NAME].toLowerCase().indexOf(needle) >= 0;
+      return g.test(it, favs) && (!needle || it[I_NAME].toLowerCase().indexOf(needle) >= 0);
     });
+    if (g.sort) shown.sort(g.sort);
     ii = 0;
   }
+
   function rows(list, sel, focused, label, logo) {
     var start = Math.max(0, Math.min(sel - 4, list.length - ROWS));
     return list.slice(start, start + ROWS).map(function (x, i) {
@@ -498,18 +573,45 @@ function Browse(title, items, loading, episodes) {
         '<span>' + esc(label(x)) + '</span></div>';
     }).join('');
   }
+  function posters() {
+    var lastRow = Math.ceil(shown.length / COLS) - 1;
+    var startRow = Math.max(0, Math.min(Math.floor(ii / COLS) - 1, lastRow - GRID_ROWS + 1));
+    return shown.slice(startRow * COLS, (startRow + GRID_ROWS) * COLS).map(function (it, i) {
+      var n = startRow * COLS + i;
+      return '<div class="poster' + (n === ii ? (col === 1 ? ' focus' : ' sel') : '') + '">' +
+        (it[I_LOGO] ? '<img src="' + esc(it[I_LOGO]) + '" onerror="this.style.display=\'none\'">' : '') +
+        '<span>' + esc(it[I_NAME]) + '</span></div>';
+    }).join('');
+  }
+  function details(it, info) {
+    info = info || {};
+    var year = it[I_YEAR] || String(info.releasedate || '').substr(0, 4);
+    var rating = it[I_RATING] || info.rating;
+    var genre = it[I_GENRE] ? genres(it).join(', ') : info.genre || '';
+    var plot = it[I_PLOT] || info.plot || (it[I_KIND] === MOVIE && xtreamCreds() ? 'Carregando sinopse…' : 'Sem sinopse.');
+    var meta = [year, rating && Number(rating) ? '★ ' + Number(rating).toFixed(1).replace('.', ',') : '', genre]
+      .filter(function (x) { return x; }).join('  ·  ');
+    return '<h3>' + esc(it[I_NAME]) + '</h3><div class="meta">' + esc(meta) + '</div><p>' + esc(plot) + '</p>';
+  }
+
   function render() {
     var empty = msg || (shown.length ? '' : cur === 0 && !episodes ? 'Sem favoritos ainda. Segure OK num item para favoritar.' : 'Nada aqui.');
     var liveList = shown.length && shown[ii][I_KIND] === LIVE;
-    app.innerHTML = '<div class="browse"><div class="left"><h2>' + esc(title) + '</h2><div class="list">' +
-      rows(groups, col === 0 ? gi : cur, col === 0, function (g) { return g; }) + '</div></div>' +
+    var body;
+    if (empty) body = '<div class="empty">' + esc(empty) + '</div>';
+    else if (grid) {
+      body = '<div class="split"><div><div class="grid">' + posters() + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length +
+        '</div></div><div class="details" id="details">' + details(shown[ii]) + '</div></div>';
+    } else {
+      body = '<div class="list">' + rows(shown, ii, col === 1, function (it) { return it[I_NAME]; },
+        function (it) { return it[I_LOGO]; }) + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>' +
+        (liveList ? '<div class="epg" id="epg"></div>' : '');
+    }
+    app.innerHTML = '<div class="browse' + (grid ? ' gridmode' : '') + '"><div class="left"><h2>' + esc(title) + '</h2><div class="list">' +
+      rows(groups, col === 0 ? gi : cur, col === 0, function (g) { return g.label; }) + '</div></div>' +
       '<div class="right"><div class="search' + (col === 2 ? ' focus' : '') + '"><input id="q" placeholder="Buscar…" value="' + esc(q) + '"></div>' +
-      (empty ? '<div class="empty">' + esc(empty) + '</div>'
-        : '<div class="list">' + rows(shown, ii, col === 1, function (it) { return it[I_NAME]; },
-          function (it) { return it[I_LOGO]; }) + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>' +
-          (liveList ? '<div class="epg" id="epg"></div>' : '')) +
-      '</div></div>';
-    if (liveList) showEpg();
+      body + '</div></div>';
+    if (!empty && (liveList || grid)) loadExtra();
     var qi = document.getElementById('q'), timer = 0;
     qi.addEventListener('input', function () {
       clearTimeout(timer);
@@ -517,17 +619,31 @@ function Browse(title, items, loading, episodes) {
     });
     qi.addEventListener('blur', function () { q = qi.value; filter(); col = shown.length ? 1 : 2; render(); });
   }
-  /** Guide for the highlighted channel, fetched only once the remote stops moving. */
-  function showEpg() {
+
+  /** Guide (channels) or movie plot, fetched only once the remote stops moving. */
+  function loadExtra() {
     var it = shown[ii];
-    clearTimeout(epgTimer);
-    epgTimer = setTimeout(function () {
-      epgNow(it).then(function (text) {
-        var el = document.getElementById('epg');
-        if (el && shown[ii] === it) el.textContent = text;
-      }, function () {});
-    }, 500);
+    clearTimeout(detailTimer);
+    if (it[I_KIND] === LIVE) {
+      detailTimer = setTimeout(function () {
+        epgNow(it).then(function (text) {
+          var el = document.getElementById('epg');
+          if (el && shown[ii] === it) el.textContent = text;
+        }, function () {});
+      }, 500);
+    } else if (it[I_KIND] === MOVIE && !it[I_PLOT] && xtreamCreds()) {
+      detailTimer = setTimeout(function () {
+        vodInfo(it).then(function (info) {
+          var el = document.getElementById('details');
+          if (el && shown[ii] === it) el.innerHTML = details(it, info || { plot: 'Sem sinopse.' });
+        }, function () {
+          var el = document.getElementById('details');
+          if (el && shown[ii] === it) el.innerHTML = details(it, { plot: 'Sem sinopse.' });
+        });
+      }, 500);
+    }
   }
+
   function open() {
     var it = shown[ii];
     if (it[I_KIND] === SERIES) {
@@ -537,28 +653,31 @@ function Browse(title, items, loading, episodes) {
     } else show(Player(shown, ii));
   }
   function move(n, d) { return Math.max(0, Math.min(n - 1, d)); }
+  function toggleFavorite() {
+    var favs = favorites(), id = key(shown[ii]);
+    if (favs.has(id)) { favs.delete(id); toast('Removido dos favoritos'); } else { favs.add(id); toast('Adicionado aos favoritos'); }
+    saveFavorites(favs);
+    if (cur === 0) filter();
+  }
 
   var screen = {
     render: render,
     setData: function (list) { msg = ''; setData(list); if (current() === screen) render(); },
     fail: function (m) { msg = m; if (current() === screen) render(); },
     key: function (k) {
-      var page = k === KEY.CHUP ? -ROWS : k === KEY.CHDOWN ? ROWS : 0;
+      var step = grid ? COLS : 1, pageSize = grid ? COLS * GRID_ROWS : ROWS;
+      var page = k === KEY.CHUP ? -pageSize : k === KEY.CHDOWN ? pageSize : 0;
       if (col === 0) {
-        if (k === KEY.UP || k === KEY.DOWN || page) gi = move(groups.length, gi + (page || (k === KEY.UP ? -1 : 1)));
+        if (k === KEY.UP || k === KEY.DOWN || page) gi = move(groups.length, gi + (page ? (page > 0 ? ROWS : -ROWS) : k === KEY.UP ? -1 : 1));
         else if (k === KEY.ENTER) { cur = gi; filter(); if (shown.length) col = 1; }
         else if (k === KEY.RIGHT && shown.length) col = 1;
       } else if (col === 1) {
-        if (k === KEY.UP && ii === 0) { col = 2; render(); document.getElementById('q').focus(); return; }
-        if (k === KEY.UP || k === KEY.DOWN || page) ii = move(shown.length, ii + (page || (k === KEY.UP ? -1 : 1)));
-        else if (k === KEY.LEFT) { col = 0; gi = cur; }
+        if (k === KEY.UP && ii < step) { col = 2; render(); document.getElementById('q').focus(); return; }
+        if (k === KEY.UP || k === KEY.DOWN || page) ii = move(shown.length, ii + (page || (k === KEY.UP ? -step : step)));
+        else if (k === KEY.LEFT) { if (grid && ii % COLS) ii--; else { col = 0; gi = cur; } }
+        else if (k === KEY.RIGHT) { if (grid && ii % COLS < COLS - 1 && ii + 1 < shown.length) ii++; }
         else if (k === KEY.ENTER && shown.length) { open(); return; }
-        else if (k === KEY.LONG && shown.length) {
-          var favs = favorites(), id = key(shown[ii]);
-          if (favs.has(id)) { favs.delete(id); toast('Removido dos favoritos'); } else { favs.add(id); toast('Adicionado aos favoritos'); }
-          saveFavorites(favs);
-          if (cur === 0) filter();
-        }
+        else if (k === KEY.LONG && shown.length) toggleFavorite();
       } else { // search box
         if (k === KEY.DOWN && shown.length) col = 1;
         else if (k === KEY.LEFT) col = 0;
