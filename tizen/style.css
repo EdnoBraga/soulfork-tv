@@ -1,7 +1,10 @@
 :root { --bg: #0B0F1F; --card: #1A2140; --cyan: #5EE6E6; --purple: #5B2FC9; --muted: #9AA3C7; }
 * { box-sizing: border-box; }
-html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: #fff;
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; color: #fff;
     font-family: "Samsung One", "SamsungOneUI", Roboto, Arial, sans-serif; }
+/* Only body is painted: AVPlay video sits under the page, so html must never have a background. */
+html { background: transparent; }
+body { background: var(--bg); }
 body.playing { background: transparent; }
 body.playing #app { display: none; }
 /* AVPlay draws on a hardware plane under the page: #av must stay transparent. */
