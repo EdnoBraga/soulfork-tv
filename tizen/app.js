@@ -465,23 +465,23 @@ function Login(autoload, refresh) {
 }
 
 function Home() {
-  var idx = 0;
-  var cards = [['TV ao Vivo', repo.live.length + ' canais', LIVE], ['Filmes', repo.movies.length + ' títulos', MOVIE],
-    ['Séries', repo.series.length + ' títulos', SERIES]];
+  // 0-3: cards, 4-5: actions underneath.
+  var idx = 0, CARDS = 4;
+  var cards = [['TV ao Vivo', repo.live.length + ' canais'], ['Filmes', repo.movies.length + ' títulos'],
+    ['Séries', repo.series.length + ' títulos'], ['Multitela', 'até 4 canais']];
   function render() {
     app.innerHTML = '<div class="home"><div class="brand"><img src="logo.png"><h1>SoulFork TV</h1></div><div class="cards">' +
       cards.map(function (c, i) { return '<div class="tile" id="h' + i + '">' + c[0] + '<small>' + c[1] + '</small></div>'; }).join('') +
-      '</div><div class="actions"><div class="tile" id="h3">Atualizar lista</div><div class="tile" id="h4">Trocar lista</div></div></div>';
+      '</div><div class="actions"><div class="tile" id="h4">Atualizar lista</div><div class="tile" id="h5">Trocar lista</div></div></div>';
     document.getElementById('h' + idx).classList.add('focus');
   }
   return {
     render: render,
     key: function (k) {
       if (k === KEY.ENTER) {
-        if (idx < 3) {
-          var c = cards[idx];
-          show(Browse(c[0], c[2] === LIVE ? repo.live : c[2] === MOVIE ? repo.movies : repo.series));
-        } else if (idx === 3) reset(Login(true, true));
+        if (idx < 3) show(Browse(cards[idx][0], [repo.live, repo.movies, repo.series][idx]));
+        else if (idx === 3) show(Multi());
+        else if (idx === 4) reset(Login(true, true));
         else {
           ['m3u', 'server', 'user', 'pass'].forEach(prefs.del);
           clearCache().catch(function () {});
@@ -489,13 +489,136 @@ function Home() {
         }
         return;
       }
-      if (k === KEY.DOWN && idx < 3) idx = 3;
-      else if (k === KEY.UP && idx >= 3) idx = 0;
-      else if (k === KEY.LEFT) idx = idx === 3 ? 3 : Math.max(idx === 4 ? 3 : 0, idx - 1);
-      else if (k === KEY.RIGHT) idx = idx < 2 ? idx + 1 : idx === 3 ? 4 : idx;
+      if (k === KEY.DOWN && idx < CARDS) idx = CARDS;
+      else if (k === KEY.UP && idx >= CARDS) idx = 0;
+      else if (k === KEY.LEFT) idx = idx === CARDS ? idx : idx - 1 < 0 ? 0 : idx - 1;
+      else if (k === KEY.RIGHT) idx = idx === CARDS - 1 || idx === CARDS + 1 ? idx : idx + 1;
       render();
     },
   };
+}
+
+/** Saved multiscreen channels (URLs), shared by the multiscreen and "hold OK" in the live player. */
+function multiUrls() { try { return JSON.parse(prefs.get('multi') || '[]'); } catch (e) { return []; } }
+function saveMultiUrls(urls) { prefs.set('multi', JSON.stringify(urls)); }
+
+/**
+ * Up to 4 live channels at once, each in its own <video> fed by hls.js. One more cell than channels is shown
+ * (to add the next one): 1 full screen, 2 side by side, 3-4 in 2x2. Only the selected cell has sound.
+ * OK on an empty cell picks a channel, OK on a channel opens it full screen, holding OK removes it.
+ */
+function Multi(focusUrl) {
+  var channels = [], sel = 0, cells = [];
+
+  function load() {
+    var byUrl = new Map();
+    repo.live.forEach(function (it) { byUrl.set(it[I_URL], it); });
+    channels = multiUrls().map(function (u) { return byUrl.get(u); }).filter(Boolean);
+    if (focusUrl) { sel = Math.max(0, channels.map(function (c) { return c[I_URL]; }).indexOf(focusUrl)); focusUrl = null; }
+  }
+  function count() { return Math.min(4, channels.length + 1); }
+
+  function render() {
+    load();
+    app.innerHTML = '<div class="multi">' + [0, 1, 2, 3].map(function (i) {
+      return '<div class="cell" id="c' + i + '"><video muted playsinline></video><div class="hint">+ Adicionar canal</div>' +
+        '<div class="label"></div></div>';
+    }).join('') + '</div>';
+    cells = [0, 1, 2, 3].map(function (i) {
+      var el = document.getElementById('c' + i);
+      return { el: el, video: el.querySelector('video'), label: el.querySelector('.label'), hint: el.querySelector('.hint') };
+    });
+    update();
+    channels.forEach(function (ch, i) { start(i); });
+  }
+
+  /** Positions, borders, labels and sound, without touching the running videos. */
+  function update() {
+    var n = count();
+    sel = Math.min(sel, n - 1);
+    var boxes = n === 1 ? [[0, 0, 1920, 1080]] : n === 2 ? [[0, 270, 960, 540], [960, 270, 960, 540]]
+      : [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]];
+    cells.forEach(function (c, i) {
+      var b = i < n ? boxes[i] : null, ch = channels[i];
+      c.el.style.display = b ? 'block' : 'none';
+      if (b) { c.el.style.left = b[0] + 'px'; c.el.style.top = b[1] + 'px'; c.el.style.width = b[2] + 'px'; c.el.style.height = b[3] + 'px'; }
+      c.el.className = 'cell' + (i === sel ? ' sel' : '');
+      c.hint.style.display = ch ? 'none' : 'flex';
+      c.label.style.display = ch ? 'block' : 'none';
+      if (ch && !c.failed) c.label.textContent = (i === sel ? '🔊 ' : '') + ch[I_NAME];
+      c.video.muted = i !== sel;
+    });
+  }
+
+  function start(i) {
+    var c = cells[i], ch = channels[i];
+    stop(i);
+    c.failed = false;
+    // Live streams are also served as HLS: same URL with .m3u8, which hls.js can play in a <video>.
+    var url = ch[I_URL].replace(/\.ts$/, '') + '.m3u8';
+    function fail(why) { c.failed = true; c.label.textContent = ch[I_NAME] + ': não abriu (' + why + ')'; }
+    if (window.Hls && Hls.isSupported()) {
+      var h = new Hls({ maxBufferLength: 10, backBufferLength: 0 });
+      h.on(Hls.Events.ERROR, function (e, d) { if (d.fatal) fail(d.details); });
+      h.loadSource(url);
+      h.attachMedia(c.video);
+      c.hls = h;
+    } else c.video.src = url;
+    c.video.muted = i !== sel;
+    var p = c.video.play();
+    if (p && p.catch) p.catch(function () {});
+  }
+  function stop(i) {
+    var c = cells[i];
+    if (!c) return;
+    if (c.hls) { c.hls.destroy(); c.hls = null; }
+    c.video.removeAttribute('src');
+    try { c.video.load(); } catch (e) {}
+  }
+  function stopAll() { cells.forEach(function (c, i) { stop(i); }); }
+
+  function move(k) {
+    var n = count();
+    if (n === 1) return;
+    var r = sel >> 1, col = sel & 1;
+    if (k === KEY.LEFT) col = 0; else if (k === KEY.RIGHT) col = 1;
+    else if (k === KEY.UP) r = 0; else if (k === KEY.DOWN) r = 1;
+    var next = n === 2 ? col : r * 2 + col;
+    if (next < n) sel = next;
+  }
+
+  var screen = {
+    isMulti: true,
+    render: render,
+    focus: function (url) { focusUrl = url; },
+    back: function () { stopAll(); back(); },
+    key: function (k) {
+      var ch = channels[sel];
+      if (k === KEY.ENTER) {
+        stopAll();
+        if (!ch) {
+          show(Browse('Escolha o canal', repo.live, null, false, function (it) {
+            var urls = multiUrls();
+            // The server refuses the same channel twice at the same time.
+            if (urls.indexOf(it[I_URL]) >= 0) toast('Esse canal já está na tela');
+            else if (urls.length < 4) { urls.push(it[I_URL]); saveMultiUrls(urls); sel = urls.length - 1; }
+          }));
+        } else show(Player(channels, sel));
+        return;
+      }
+      if (k === KEY.LONG && ch) {
+        stop(sel);
+        saveMultiUrls(multiUrls().filter(function (u) { return u !== ch[I_URL]; }));
+        toast(ch[I_NAME] + ' saiu da tela');
+        stopAll();
+        render();
+        return;
+      }
+      move(k);
+      update();
+    },
+  };
+  return screen;
 }
 
 var ROWS = 9;      // visible rows in list mode (live channels, episodes)
@@ -503,7 +626,7 @@ var COLS = 3;      // poster grid for movies and series: 3 x 3
 var GRID_ROWS = 3;
 
 /** Categories on the left; a list (live, episodes) or a poster grid with details (movies, series) on the right. */
-function Browse(title, items, loading, episodes) {
+function Browse(title, items, loading, episodes, pick) {
   var all = [], groups = [], shown = [], cur = 1, col = 0, gi = 1, ii = 0, q = '', msg = loading || '';
   var grid = false, detailTimer = 0;
 
@@ -646,7 +769,8 @@ function Browse(title, items, loading, episodes) {
 
   function open() {
     var it = shown[ii];
-    if (it[I_KIND] === SERIES) {
+    if (pick) { pick(it); back(); } // choosing a channel for the multiscreen
+    else if (it[I_KIND] === SERIES) {
       var b = Browse(it[I_NAME], [], 'Carregando episódios…', true);
       show(b);
       episodesOf(it[I_SID]).then(b.setData, function (e) { b.fail('Não deu para carregar: ' + (e.message || e)); });
@@ -730,6 +854,24 @@ function Player(list, start) {
       if (item() === it) toast((idx + 1) + '. ' + it[I_NAME] + (text ? '\n' + text : ''), ms);
     }, function () {});
   }
+  /** Hold OK on a live channel: send it to the multiscreen and go there. */
+  function addToMulti() {
+    var url = item()[I_URL], urls = multiUrls();
+    if (urls.indexOf(url) < 0) {
+      if (urls.length >= 4) { toast('O Multitela já tem 4 canais. Segure OK num quadro para tirar um.'); return; }
+      urls.push(url);
+      saveMultiUrls(urls);
+    }
+    toast(item()[I_NAME] + ' no Multitela');
+    stop();
+    document.body.classList.remove('playing');
+    stack.pop(); // the player
+    // Back to the multiscreen if it is underneath, otherwise a new one.
+    var at = -1;
+    stack.forEach(function (s, i) { if (s.isMulti) at = i; });
+    if (at >= 0) { stack.length = at + 1; stack[at].focus(url); stack[at].render(); }
+    else show(Multi(url));
+  }
   function seek(ms) {
     if (AV) { try { ms > 0 ? webapis.avplay.jumpForward(ms) : webapis.avplay.jumpBackward(-ms); } catch (e) {} }
     else vid.currentTime += ms / 1000;
@@ -751,6 +893,7 @@ function Player(list, start) {
         if (k === KEY.UP || k === KEY.CHUP) { idx = (idx - 1 + list.length) % list.length; play(); }
         else if (k === KEY.DOWN || k === KEY.CHDOWN) { idx = (idx + 1) % list.length; play(); }
         else if (k === KEY.ENTER) { toast((idx + 1) + '. ' + item()[I_NAME]); showGuide(6000); }
+        else if (k === KEY.LONG) addToMulti();
         return;
       }
       if (k === KEY.ENTER || k === KEY.PLAYPAUSE || k === KEY.PLAY || k === KEY.PAUSE) togglePause();
