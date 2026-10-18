@@ -528,8 +528,8 @@ function Home() {
  * Multiscreen channels (URLs), shared by the multiscreen and "hold OK" in the live player.
  * Kept only while the app is open (sessionStorage): closing it starts the next multiscreen empty.
  */
-var MULTI_MAX = 9; // a PC decodes 9 HD channels; the limit is bandwidth (~5 Mbps each)
-var CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+var MULTI_MAX = 4;
+var CELLS = [0, 1, 2, 3];
 function multiUrls() { try { return JSON.parse(sessionStorage.getItem('sf.multi') || '[]'); } catch (e) { return []; } }
 function saveMultiUrls(urls) { sessionStorage.setItem('sf.multi', JSON.stringify(urls)); }
 prefs.del('multi'); // older versions kept them across restarts
@@ -592,10 +592,7 @@ function Multi(focusUrl) {
     var n = count();
     sel = Math.min(sel, n - 1);
     var boxes = n === 1 ? [[0, 0, 1920, 1080]] : n === 2 ? [[0, 270, 960, 540], [960, 270, 960, 540]]
-      : n <= 4 ? [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]]
-      : CELLS.map(function (i) { // 5-6: 3x2 centered, 7-9: 3x3
-        return [(i % 3) * 640, (n <= 6 ? 180 : 0) + Math.floor(i / 3) * 360, 640, 360];
-      });
+      : [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]];
     cells.forEach(function (c, i) {
       var b = i < n ? boxes[i] : null, ch = channels[i];
       c.el.style.display = b ? 'block' : 'none';
