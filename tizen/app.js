@@ -3,9 +3,12 @@
 // no optional chaining, no ??, no object spread, no flex gap.
 
 var AV = typeof webapis !== 'undefined' && webapis.avplay;
+// Windows app (Electron): its preload exposes window.soulfork. Adds mouse, multiscreen and "open in VLC".
+var DESKTOP = typeof window.soulfork !== 'undefined';
 var KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13, BACK: 10009, ESC: 27, BACKSPACE: 8,
   CHUP: 427, CHDOWN: 428, PLAY: 415, PAUSE: 19, PLAYPAUSE: 10252, FF: 417, RW: 412, STOP: 413,
-  IME_DONE: 65376, IME_CANCEL: 65385, LONG: 'long' };
+  IME_DONE: 65376, IME_CANCEL: 65385, LONG: 'long',
+  PGUP: 33, PGDN: 34, V: 86 }; // PageUp/PageDown stand in for CH+/CH- on a PC keyboard
 if (typeof tizen !== 'undefined') {
   ['ChannelUp', 'ChannelDown', 'MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaFastForward',
     'MediaRewind', 'MediaStop'].forEach(function (k) { try { tizen.tvinputdevice.registerKey(k); } catch (e) {} });
@@ -389,6 +392,22 @@ document.addEventListener('keyup', function (e) {
   if (!longFired && current()) current().key(KEY.ENTER);
 });
 
+// Mouse (Windows): clickable elements carry data-n (simple screens), data-g (category) or data-i (item).
+// Click = OK on that element, right click = hold OK (favorite / remove), wheel = up/down.
+function mouse(e, long) {
+  var s = current(), el = e.target.closest && e.target.closest('[data-n],[data-g],[data-i]');
+  if (!s || !s.click) return;
+  if (el || s.clickAnywhere) { e.preventDefault(); s.click(el ? el.dataset : {}, long); }
+}
+document.addEventListener('click', function (e) { mouse(e, false); });
+document.addEventListener('contextmenu', function (e) { mouse(e, true); });
+document.addEventListener('wheel', function (e) {
+  var s = current();
+  if (!s || !DESKTOP || document.body.classList.contains('playing')) return;
+  if (s.wheel) s.wheel(e.deltaY > 0 ? KEY.DOWN : KEY.UP, e.target);
+  else s.key(e.deltaY > 0 ? KEY.DOWN : KEY.UP);
+});
+
 /** Linear focus list for simple screens: returns new index. */
 function step(i, k, n) {
   if (k === KEY.DOWN || k === KEY.RIGHT) return Math.min(n - 1, i + 1);
@@ -415,8 +434,10 @@ function Login(autoload, refresh) {
         ? input('server', 'Servidor (http://servidor:porta)') + input('user', 'Usuário') + input('pass', 'Senha', 'password')
         : input('m3u', 'http://servidor/lista.m3u8')) +
       '<div id="enter" class="tile enter">' + (busy ? 'Carregando…' : 'Entrar') + '</div>' +
-      '<div class="hint">Para colar o link: use o teclado do app SmartThings no celular.</div>' +
+      '<div class="hint">' + (DESKTOP ? 'Clique no campo e cole o link com Ctrl+V.'
+        : 'Para colar o link: use o teclado do app SmartThings no celular.') + '</div>' +
       '<div class="status">' + esc(status) + '</div></div>';
+    ids().forEach(function (id, i) { document.getElementById(id).setAttribute('data-n', i); });
     Array.prototype.forEach.call(app.querySelectorAll('input'), function (el) {
       el.addEventListener('input', function () { fields[el.id] = el.value; });
     });
@@ -449,6 +470,7 @@ function Login(autoload, refresh) {
 
   var screen = {
     render: render,
+    click: function (d) { idx = Number(d.n); focus(); screen.key(KEY.ENTER); },
     key: function (k) {
       var id = ids()[idx];
       if (k !== KEY.ENTER) { idx = step(idx, k, ids().length); focus(); return; }
@@ -465,23 +487,26 @@ function Login(autoload, refresh) {
 }
 
 function Home() {
-  var idx = 0;
-  var cards = [['TV ao Vivo', repo.live.length + ' canais', LIVE], ['Filmes', repo.movies.length + ' títulos', MOVIE],
-    ['Séries', repo.series.length + ' títulos', SERIES]];
+  var cards = [['TV ao Vivo', repo.live.length + ' canais'], ['Filmes', repo.movies.length + ' títulos'],
+    ['Séries', repo.series.length + ' títulos']];
+  if (DESKTOP) cards.push(['Multitela', 'até 4 canais']); // TVs get a single video decoder, see Multi
+  // 0..C-1: cards, C and C+1: the actions underneath.
+  var C = cards.length, idx = 0;
   function render() {
     app.innerHTML = '<div class="home"><div class="brand"><img src="logo.png"><h1>SoulFork TV</h1></div><div class="cards">' +
-      cards.map(function (c, i) { return '<div class="tile" id="h' + i + '">' + c[0] + '<small>' + c[1] + '</small></div>'; }).join('') +
-      '</div><div class="actions"><div class="tile" id="h3">Atualizar lista</div><div class="tile" id="h4">Trocar lista</div></div></div>';
+      cards.map(function (c, i) { return '<div class="tile" id="h' + i + '" data-n="' + i + '">' + c[0] + '<small>' + c[1] + '</small></div>'; }).join('') +
+      '</div><div class="actions"><div class="tile" id="h' + C + '" data-n="' + C + '">Atualizar lista</div>' +
+      '<div class="tile" id="h' + (C + 1) + '" data-n="' + (C + 1) + '">Trocar lista</div></div></div>';
     document.getElementById('h' + idx).classList.add('focus');
   }
-  return {
+  var screen = {
     render: render,
+    click: function (d) { idx = Number(d.n); screen.key(KEY.ENTER); },
     key: function (k) {
       if (k === KEY.ENTER) {
-        if (idx < 3) {
-          var c = cards[idx];
-          show(Browse(c[0], c[2] === LIVE ? repo.live : c[2] === MOVIE ? repo.movies : repo.series));
-        } else if (idx === 3) reset(Login(true, true));
+        if (idx < 3) show(Browse(cards[idx][0], [repo.live, repo.movies, repo.series][idx]));
+        else if (idx < C) show(Multi());
+        else if (idx === C) reset(Login(true, true));
         else {
           ['m3u', 'server', 'user', 'pass'].forEach(prefs.del);
           clearCache().catch(function () {});
@@ -489,13 +514,165 @@ function Home() {
         }
         return;
       }
-      if (k === KEY.DOWN && idx < 3) idx = 3;
-      else if (k === KEY.UP && idx >= 3) idx = 0;
-      else if (k === KEY.LEFT) idx = idx === 3 ? 3 : Math.max(idx === 4 ? 3 : 0, idx - 1);
-      else if (k === KEY.RIGHT) idx = idx < 2 ? idx + 1 : idx === 3 ? 4 : idx;
+      if (k === KEY.DOWN && idx < C) idx = C;
+      else if (k === KEY.UP && idx >= C) idx = 0;
+      else if (k === KEY.LEFT) idx = idx === C ? idx : Math.max(0, idx - 1);
+      else if (k === KEY.RIGHT) idx = idx === C - 1 || idx === C + 1 ? idx : idx + 1;
       render();
     },
   };
+  return screen;
+}
+
+/** Saved multiscreen channels (URLs), shared by the multiscreen and "hold OK" in the live player. */
+function multiUrls() { try { return JSON.parse(prefs.get('multi') || '[]'); } catch (e) { return []; } }
+function saveMultiUrls(urls) { prefs.set('multi', JSON.stringify(urls)); }
+
+/** Plays a live channel in a <video>: the .m3u8 variant of the stream through hls.js. Returns a stop function. */
+function playHls(video, url, onFail) {
+  var hls = null;
+  var m3u8 = url.replace(/\.ts$/, '') + '.m3u8';
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({ maxBufferLength: 10, backBufferLength: 0 });
+    hls.on(Hls.Events.ERROR, function (e, d) { if (d.fatal) onFail(d.details); });
+    hls.loadSource(m3u8);
+    hls.attachMedia(video);
+  } else video.src = m3u8;
+  var p = video.play();
+  if (p && p.catch) p.catch(function () {});
+  return function () {
+    if (hls) hls.destroy();
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) {}
+  };
+}
+
+/**
+ * Windows only: up to 4 live channels at once, one <video> + hls.js each. (On the Samsung QN55Q80B an app gets
+ * a single video decoder, so this was removed from the TV after on-device tests.) One more cell than channels is
+ * shown: 1 full screen, 2 side by side, 3-4 in 2x2. The selected cell has the sound.
+ * OK picks or swaps the cell's channel, CH+/CH- (PageUp/PageDown) zaps it, holding OK removes it.
+ */
+function Multi(focusUrl) {
+  var channels = [], sel = 0, cells = [];
+
+  function load() {
+    var byUrl = new Map();
+    repo.live.forEach(function (it) { byUrl.set(it[I_URL], it); });
+    channels = multiUrls().map(function (u) { return byUrl.get(u); }).filter(Boolean);
+    if (focusUrl) { sel = Math.max(0, channels.map(function (c) { return c[I_URL]; }).indexOf(focusUrl)); focusUrl = null; }
+  }
+  function count() { return Math.min(4, channels.length + 1); }
+
+  function render() {
+    load();
+    app.innerHTML = '<div class="multi">' + [0, 1, 2, 3].map(function (i) {
+      return '<div class="cell" id="c' + i + '" data-n="' + i + '"><video muted playsinline></video>' +
+        '<div class="hint">+ Adicionar canal</div><div class="label"></div></div>';
+    }).join('') + '</div>';
+    cells = [0, 1, 2, 3].map(function (i) {
+      var el = document.getElementById('c' + i);
+      return { el: el, video: el.querySelector('video'), label: el.querySelector('.label'), hint: el.querySelector('.hint') };
+    });
+    update();
+    channels.forEach(function (ch, i) { start(i); });
+  }
+
+  /** Positions, borders, labels and sound, without touching the running videos. */
+  function update() {
+    var n = count();
+    sel = Math.min(sel, n - 1);
+    var boxes = n === 1 ? [[0, 0, 1920, 1080]] : n === 2 ? [[0, 270, 960, 540], [960, 270, 960, 540]]
+      : [[0, 0, 960, 540], [960, 0, 960, 540], [0, 540, 960, 540], [960, 540, 960, 540]];
+    cells.forEach(function (c, i) {
+      var b = i < n ? boxes[i] : null, ch = channels[i];
+      c.el.style.display = b ? 'block' : 'none';
+      if (b) { c.el.style.left = b[0] + 'px'; c.el.style.top = b[1] + 'px'; c.el.style.width = b[2] + 'px'; c.el.style.height = b[3] + 'px'; }
+      c.el.className = 'cell' + (i === sel ? ' sel' : '');
+      c.hint.style.display = ch ? 'none' : 'flex';
+      c.label.style.display = ch ? 'block' : 'none';
+      if (ch && !c.failed) c.label.textContent = (i === sel ? '🔊 ' : '') + ch[I_NAME];
+      c.video.muted = i !== sel;
+    });
+  }
+
+  function start(i) {
+    var c = cells[i], ch = channels[i];
+    stop(i);
+    c.failed = false;
+    c.stop = playHls(c.video, ch[I_URL], function (why) { c.failed = true; c.label.textContent = ch[I_NAME] + ': não abriu (' + why + ')'; });
+    c.video.muted = i !== sel;
+  }
+  function stop(i) { var c = cells[i]; if (c && c.stop) { c.stop(); c.stop = null; } }
+  function stopAll() { cells.forEach(function (c, i) { stop(i); }); }
+
+  function move(k) {
+    var n = count();
+    if (n === 1) return;
+    var r = sel >> 1, col = sel & 1;
+    if (k === KEY.LEFT) col = 0; else if (k === KEY.RIGHT) col = 1;
+    else if (k === KEY.UP) r = 0; else if (k === KEY.DOWN) r = 1;
+    var next = n === 2 ? col : r * 2 + col;
+    if (next < n) sel = next;
+  }
+
+  /** Puts `it` in cell i (adding or replacing). The server refuses the same channel twice at the same time. */
+  function setChannel(i, it) {
+    var urls = multiUrls();
+    if (urls.indexOf(it[I_URL]) >= 0) { toast('Esse canal já está na tela'); return false; }
+    if (i < urls.length) urls[i] = it[I_URL]; else urls.push(it[I_URL]);
+    saveMultiUrls(urls);
+    sel = Math.min(i, urls.length - 1);
+    return true;
+  }
+
+  /** Next/previous channel of the list in the selected cell, skipping ones already on screen. */
+  function zap(d) {
+    var ch = channels[sel], n = repo.live.length;
+    if (!ch) return;
+    var at = repo.live.indexOf(ch), urls = multiUrls();
+    for (var s = 1; s < n; s++) {
+      var it = repo.live[((at + d * s) % n + n) % n];
+      if (urls.indexOf(it[I_URL]) < 0) { setChannel(sel, it); break; }
+    }
+    load();
+    start(sel);
+    update();
+    toast(channels[sel][I_NAME]);
+  }
+
+  var screen = {
+    isMulti: true,
+    render: render,
+    focus: function (url) { focusUrl = url; },
+    back: function () { stopAll(); back(); },
+    click: function (d, long) {
+      var i = Number(d.n);
+      if (i !== sel) { sel = i; update(); if (!long) return; } // first click selects (and moves the sound)
+      screen.key(long ? KEY.LONG : KEY.ENTER);
+    },
+    key: function (k) {
+      var ch = channels[sel];
+      if (k === KEY.ENTER) {
+        stopAll();
+        var cell = sel;
+        show(Browse(ch ? 'Trocar o canal' : 'Escolha o canal', repo.live, null, false, function (it) { setChannel(cell, it); }));
+        return;
+      }
+      if (k === KEY.LONG && ch) {
+        stopAll();
+        saveMultiUrls(multiUrls().filter(function (u) { return u !== ch[I_URL]; }));
+        toast(ch[I_NAME] + ' saiu da tela');
+        render();
+        return;
+      }
+      if (k === KEY.CHUP || k === KEY.PGUP) { zap(-1); return; }
+      if (k === KEY.CHDOWN || k === KEY.PGDN) { zap(1); return; }
+      move(k);
+      update();
+    },
+  };
+  return screen;
 }
 
 var ROWS = 9;      // visible rows in list mode (live channels, episodes)
@@ -503,7 +680,7 @@ var COLS = 3;      // poster grid for movies and series: 3 x 3
 var GRID_ROWS = 3;
 
 /** Categories on the left; a list (live, episodes) or a poster grid with details (movies, series) on the right. */
-function Browse(title, items, loading, episodes) {
+function Browse(title, items, loading, episodes, pick) {
   var all = [], groups = [], shown = [], cur = 1, col = 0, gi = 1, ii = 0, q = '', msg = loading || '';
   var grid = false, detailTimer = 0;
 
@@ -564,11 +741,11 @@ function Browse(title, items, loading, episodes) {
     ii = 0;
   }
 
-  function rows(list, sel, focused, label, logo) {
+  function rows(list, sel, focused, label, logo, attr) {
     var start = Math.max(0, Math.min(sel - 4, list.length - ROWS));
     return list.slice(start, start + ROWS).map(function (x, i) {
       var n = start + i, img = logo ? logo(x) : '';
-      return '<div class="row' + (n === sel ? (focused ? ' focus' : ' sel') : '') + '">' +
+      return '<div class="row' + (n === sel ? (focused ? ' focus' : ' sel') : '') + '" data-' + attr + '="' + n + '">' +
         (img ? '<img src="' + esc(img) + '" onerror="this.style.visibility=\'hidden\'">' : '') +
         '<span>' + esc(label(x)) + '</span></div>';
     }).join('');
@@ -578,7 +755,7 @@ function Browse(title, items, loading, episodes) {
     var startRow = Math.max(0, Math.min(Math.floor(ii / COLS) - 1, lastRow - GRID_ROWS + 1));
     return shown.slice(startRow * COLS, (startRow + GRID_ROWS) * COLS).map(function (it, i) {
       var n = startRow * COLS + i;
-      return '<div class="poster' + (n === ii ? (col === 1 ? ' focus' : ' sel') : '') + '">' +
+      return '<div class="poster' + (n === ii ? (col === 1 ? ' focus' : ' sel') : '') + '" data-i="' + n + '">' +
         (it[I_LOGO] ? '<img src="' + esc(it[I_LOGO]) + '" onerror="this.style.display=\'none\'">' : '') +
         '<span>' + esc(it[I_NAME]) + '</span></div>';
     }).join('');
@@ -604,11 +781,11 @@ function Browse(title, items, loading, episodes) {
         '</div></div><div class="details" id="details">' + details(shown[ii]) + '</div></div>';
     } else {
       body = '<div class="list">' + rows(shown, ii, col === 1, function (it) { return it[I_NAME]; },
-        function (it) { return it[I_LOGO]; }) + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>' +
+        function (it) { return it[I_LOGO]; }, 'i') + '</div><div class="count">' + (ii + 1) + ' de ' + shown.length + '</div>' +
         (liveList ? '<div class="epg" id="epg"></div>' : '');
     }
     app.innerHTML = '<div class="browse' + (grid ? ' gridmode' : '') + '"><div class="left"><h2>' + esc(title) + '</h2><div class="list">' +
-      rows(groups, col === 0 ? gi : cur, col === 0, function (g) { return g.label; }) + '</div></div>' +
+      rows(groups, col === 0 ? gi : cur, col === 0, function (g) { return g.label; }, null, 'g') + '</div></div>' +
       '<div class="right"><div class="search' + (col === 2 ? ' focus' : '') + '"><input id="q" placeholder="Buscar…" value="' + esc(q) + '"></div>' +
       body + '</div></div>';
     if (!empty && (liveList || grid)) loadExtra();
@@ -646,7 +823,8 @@ function Browse(title, items, loading, episodes) {
 
   function open() {
     var it = shown[ii];
-    if (it[I_KIND] === SERIES) {
+    if (pick) { pick(it); back(); } // choosing a channel for the multiscreen
+    else if (it[I_KIND] === SERIES) {
       var b = Browse(it[I_NAME], [], 'Carregando episódios…', true);
       show(b);
       episodesOf(it[I_SID]).then(b.setData, function (e) { b.fail('Não deu para carregar: ' + (e.message || e)); });
@@ -664,6 +842,17 @@ function Browse(title, items, loading, episodes) {
     render: render,
     setData: function (list) { msg = ''; setData(list); if (current() === screen) render(); },
     fail: function (m) { msg = m; if (current() === screen) render(); },
+    // Mouse: a click selects and opens; right click favorites; the wheel scrolls the list under the pointer.
+    click: function (d, long) {
+      if (d.g !== undefined) { col = 0; gi = Number(d.g); screen.key(KEY.ENTER); return; }
+      if (d.i !== undefined) { col = 1; ii = Number(d.i); screen.key(long ? KEY.LONG : KEY.ENTER); }
+    },
+    wheel: function (k, target) {
+      var left = target.closest && target.closest('.left');
+      if (left && col !== 0) { col = 0; gi = cur; }
+      if (!left && col !== 1 && shown.length) col = 1;
+      screen.key(k);
+    },
     key: function (k) {
       var step = grid ? COLS : 1, pageSize = grid ? COLS * GRID_ROWS : ROWS;
       var page = k === KEY.CHUP ? -pageSize : k === KEY.CHDOWN ? pageSize : 0;
@@ -691,13 +880,18 @@ function Browse(title, items, loading, episodes) {
 }
 
 function Player(list, start) {
-  var idx = start, paused = false, vid = document.getElementById('vid');
+  var idx = start, paused = false, vid = document.getElementById('vid'), stopHls = null;
   function item() { return list[idx]; }
   function live() { return item()[I_KIND] === LIVE; }
 
   function stop() {
     if (AV) { try { webapis.avplay.stop(); } catch (e) {} try { webapis.avplay.close(); } catch (e) {} }
+    if (stopHls) { stopHls(); stopHls = null; }
     vid.pause(); vid.removeAttribute('src'); vid.load(); vid.hidden = true;
+  }
+  /** The PC's built-in player can't do every format (mkv, HEVC): offer VLC instead. */
+  function failed(why) {
+    toast('Não foi possível tocar (' + why + ')' + (DESKTOP ? '\nPressione V para abrir no VLC.' : ''), DESKTOP ? 15000 : 6000);
   }
   function play() {
     var it = item();
@@ -718,10 +912,15 @@ function Player(list, start) {
         webapis.avplay.prepareAsync(function () { webapis.avplay.play(); },
           function (e) { toast('Não foi possível tocar (' + e + ')', 6000); });
       } catch (e) { toast('Não foi possível tocar (' + (e.message || e) + ')', 6000); }
-    } else { // desktop browser, for development
+    } else { // Windows app / desktop browser
       vid.hidden = false;
-      vid.src = it[I_URL];
-      vid.play().catch(function (e) { toast('Não foi possível tocar (' + e.message + ')', 6000); });
+      vid.muted = false;
+      if (live()) stopHls = playHls(vid, it[I_URL], failed);
+      else {
+        vid.onerror = function () { failed(vid.error ? 'formato não suportado' : 'erro'); };
+        vid.src = it[I_URL];
+        vid.play().catch(function () {});
+      }
     }
   }
   function showGuide(ms) {
@@ -741,7 +940,28 @@ function Player(list, start) {
     toast(paused ? '❚❚ Pausado' : '▶ ' + item()[I_NAME]);
   }
 
+  /** Hold OK on a live channel (Windows): send it to the multiscreen and go there. */
+  function addToMulti() {
+    var url = item()[I_URL], urls = multiUrls();
+    if (urls.indexOf(url) < 0) {
+      if (urls.length >= 4) { toast('O Multitela já tem 4 canais. Segure OK num quadro para tirar um.'); return; }
+      urls.push(url);
+      saveMultiUrls(urls);
+    }
+    toast(item()[I_NAME] + ' no Multitela');
+    stop();
+    document.body.classList.remove('playing');
+    stack.pop(); // the player
+    // Back to the multiscreen if it is underneath, otherwise a new one.
+    var at = -1;
+    stack.forEach(function (s, i) { if (s.isMulti) at = i; });
+    if (at >= 0) { stack.length = at + 1; stack[at].focus(url); stack[at].render(); }
+    else show(Multi(url));
+  }
+
   var screen = {
+    clickAnywhere: true,
+    click: function (d, long) { screen.key(long ? KEY.LONG : KEY.ENTER); },
     render: function () { document.body.classList.add('playing'); play(); },
     back: function () { stop(); hideToast(); document.body.classList.remove('playing'); back(); },
     suspend: function () { if (AV) try { webapis.avplay.suspend(); } catch (e) {} },
@@ -751,8 +971,11 @@ function Player(list, start) {
         if (k === KEY.UP || k === KEY.CHUP) { idx = (idx - 1 + list.length) % list.length; play(); }
         else if (k === KEY.DOWN || k === KEY.CHDOWN) { idx = (idx + 1) % list.length; play(); }
         else if (k === KEY.ENTER) { toast((idx + 1) + '. ' + item()[I_NAME]); showGuide(6000); }
+        else if (k === KEY.LONG && DESKTOP) addToMulti();
+        else if (k === KEY.V && DESKTOP) window.soulfork.openInVlc(item()[I_URL]);
         return;
       }
+      if (k === KEY.V && DESKTOP) { stop(); window.soulfork.openInVlc(item()[I_URL]); return; }
       if (k === KEY.ENTER || k === KEY.PLAYPAUSE || k === KEY.PLAY || k === KEY.PAUSE) togglePause();
       else if (k === KEY.RIGHT || k === KEY.FF) seek(30000);
       else if (k === KEY.LEFT || k === KEY.RW) seek(-10000);
