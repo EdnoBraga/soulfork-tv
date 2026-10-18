@@ -21,6 +21,9 @@
             android:layout_marginStart="12dp" android:layout_marginEnd="12dp" android:textSize="26sp" />
         <Button android:id="@+id/series" style="@style/Tile" android:layout_width="0dp"
             android:layout_height="match_parent" android:layout_weight="1"
+            android:layout_marginStart="12dp" android:layout_marginEnd="12dp" android:textSize="26sp" />
+        <Button android:id="@+id/multi" style="@style/Tile" android:layout_width="0dp"
+            android:layout_height="match_parent" android:layout_weight="1"
             android:layout_marginStart="12dp" android:textSize="26sp" />
     </LinearLayout>
 

@@ -180,6 +180,8 @@ class Prefs(ctx: Context) {
     var server by str("server")
     var user by str("user")
     var pass by str("pass")
+    /** Multiscreen channel URLs, one per line. */
+    var multi by str("multi")
 
     val hasLogin get() = if (mode == "xtream") server.isNotEmpty() && user.isNotEmpty() else m3uUrl.isNotEmpty()
 

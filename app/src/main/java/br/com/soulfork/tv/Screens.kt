@@ -139,6 +139,10 @@ class HomeActivity : Activity() {
         tile(R.id.live, "TV ao Vivo", "${Repo.live.size} canais", Kind.LIVE).requestFocus()
         tile(R.id.movies, "Filmes", "${Repo.movies.size} títulos", Kind.MOVIE)
         tile(R.id.series, "Séries", "${Repo.series.size} títulos", Kind.SERIES)
+        findViewById<Button>(R.id.multi).apply {
+            text = "Multitela\naté 4 canais"
+            setOnClickListener { startActivity(Intent(this@HomeActivity, MultiActivity::class.java)) }
+        }
         findViewById<Button>(R.id.reload).setOnClickListener { goLogin(refresh = true) }
         findViewById<Button>(R.id.logout).setOnClickListener { Prefs(this).clearLogin(); Repo.cacheFile(this).delete(); goLogin(refresh = false) }
     }
@@ -319,7 +323,10 @@ class BrowseActivity : Activity() {
 
     private fun open(pos: Int) {
         val item = shown[pos]
-        if (item.kind == Kind.SERIES) {
+        if (intent.getBooleanExtra("pick", false)) { // choosing a channel for the multiscreen
+            setResult(RESULT_OK, Intent().putExtra("url", item.url))
+            finish()
+        } else if (item.kind == Kind.SERIES) {
             startActivity(Intent(this, BrowseActivity::class.java)
                 .putExtra("seriesId", item.seriesId).putExtra("title", item.name))
         } else {
@@ -424,6 +431,19 @@ class Rows(
     override fun getItemCount() = rows.size
 }
 
+/** ExoPlayer that follows http<->https redirects and identifies itself like the playlist requests. */
+@OptIn(UnstableApi::class)
+fun newPlayer(ctx: android.content.Context): ExoPlayer {
+    val http = DefaultHttpDataSource.Factory()
+        .setUserAgent(USER_AGENT)
+        .setAllowCrossProtocolRedirects(true)
+        .setConnectTimeoutMs(15_000)
+        .setReadTimeoutMs(30_000)
+    return ExoPlayer.Builder(ctx)
+        .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(http))
+        .build()
+}
+
 @OptIn(UnstableApi::class)
 class PlayerActivity : Activity() {
     private lateinit var player: ExoPlayer
@@ -435,14 +455,7 @@ class PlayerActivity : Activity() {
         super.onCreate(state)
         if (restartIfEmpty() || Repo.playlist.isEmpty()) return
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent(USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
-        player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(http))
-            .build()
+        player = newPlayer(this)
         player.addListener(object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
@@ -478,15 +491,42 @@ class PlayerActivity : Activity() {
         }
     }
 
+    private var okDownAt = 0L
+    private var okLong = false
+
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
-        if (::player.isInitialized && item.kind == Kind.LIVE && e.action == KeyEvent.ACTION_DOWN) {
+        if (!::player.isInitialized || item.kind != Kind.LIVE) return super.dispatchKeyEvent(e)
+        val ok = e.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || e.keyCode == KeyEvent.KEYCODE_ENTER
+        if (ok) {
+            // Tap OK: channel guide. Hold OK: send the channel to the multiscreen.
+            if (e.action == KeyEvent.ACTION_DOWN) {
+                if (e.repeatCount == 0) { okDownAt = e.eventTime; okLong = false }
+                else if (!okLong && (e.isLongPress || e.eventTime - okDownAt > 700)) { okLong = true; addToMulti() }
+            } else if (e.action == KeyEvent.ACTION_UP && !okLong) showGuide()
+            return true
+        }
+        if (e.action == KeyEvent.ACTION_DOWN) {
             when (e.keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { zap(-1); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { showGuide(); return true }
             }
         }
         return super.dispatchKeyEvent(e)
+    }
+
+    private fun addToMulti() {
+        val prefs = Prefs(this)
+        val urls = prefs.multi.split('\n').filter { it.isNotEmpty() }.toMutableList()
+        if (item.url !in urls) {
+            if (urls.size >= 4) { toast("O Multitela já tem 4 canais. Segure OK num quadro para tirar um."); return }
+            urls += item.url
+            prefs.multi = urls.joinToString("\n")
+        }
+        toast("${item.name} no Multitela")
+        // Back to the open multiscreen if it is underneath, otherwise a new one.
+        startActivity(Intent(this, MultiActivity::class.java).putExtra("url", item.url)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        finish()
     }
 
     private fun zap(delta: Int) {
