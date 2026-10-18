@@ -48,6 +48,14 @@ class M3uTest {
     }
 
     @Test
+    fun sortsEpisodesBySeasonThenEpisode() {
+        fun ep(n: String, s: Int) = Item(n, null, "Temporada $s", "u", Kind.EPISODE)
+        val sorted = listOf(ep("Zorro S02 E01", 2), ep("Zorro S01 E10", 1), ep("Zorro S01 E02", 1), ep("T1 E1 · Piloto", 1))
+            .sortedWith(byEpisode)
+        assertEquals(listOf("T1 E1 · Piloto", "Zorro S01 E02", "Zorro S01 E10", "Zorro S02 E01"), sorted.map { it.name })
+    }
+
+    @Test
     fun groupsLooseEpisodesIntoShowsAndSeasons() {
         fun ep(n: String) = Item(n, null, "Séries | Comédia", "http://s/series/$n.mp4", Kind.EPISODE)
         val shows = groupEpisodes(listOf(ep("The Office S01 E01"), ep("The Office S02E05"), ep("Dark S1 E1"), ep("Avulso")))

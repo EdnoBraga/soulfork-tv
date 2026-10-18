@@ -88,11 +88,16 @@ function m3uParser(out) {
 var episodeRe = /^(.*?)[\s._-]*[Ss](\d{1,2})\s*[Ee]\d{1,3}/;
 
 /** "The Office S02 E05" -> show "The Office", season group "Temporada 2". */
+function showOf(name) {
+  var m = episodeRe.exec(name);
+  return (m && m[1].trim()) || name;
+}
+
 function groupEpisodes(eps) {
   var shows = new Map();
   eps.forEach(function (e) {
     var m = episodeRe.exec(e[I_NAME]);
-    var show = (m && m[1].trim()) || e[I_NAME];
+    var show = showOf(e[I_NAME]);
     var ep = m ? [e[I_KIND], e[I_NAME], e[I_LOGO], 'Temporada ' + parseInt(m[2], 10), e[I_URL], ''] : e;
     if (!shows.has(show)) shows.set(show, []);
     shows.get(show).push(ep);
@@ -232,8 +237,11 @@ function applyItems(all) {
   });
   // M3U lists series as loose episodes; fold them into one entry per show.
   repo.shows = groupEpisodes(eps);
+  // The show keeps the list's category ("Séries | Netflix"); its episodes were regrouped by season.
+  var category = new Map();
+  eps.forEach(function (e) { var s = showOf(e[I_NAME]); if (!category.has(s)) category.set(s, e[I_GROUP]); });
   repo.shows.forEach(function (list, show) {
-    repo.series.push([SERIES, show, list[0][I_LOGO], list[0][I_GROUP], '', 'm3u:' + show]);
+    repo.series.push([SERIES, show, list[0][I_LOGO], category.get(show), '', 'm3u:' + show]);
   });
 }
 

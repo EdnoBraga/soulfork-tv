@@ -169,6 +169,9 @@ class BrowseActivity : Activity() {
     private var shown = emptyList<Item>()
     private var current = 1
     private var groupsAdapter: Rows? = null
+    private var episodes = false
+    private lateinit var epg: TextView
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -179,6 +182,7 @@ class BrowseActivity : Activity() {
         itemsView = findViewById(R.id.items)
         search = findViewById(R.id.search)
         empty = findViewById(R.id.empty)
+        epg = findViewById(R.id.epg)
         groupsView.layoutManager = LinearLayoutManager(this)
         itemsView.layoutManager = LinearLayoutManager(this)
         findViewById<TextView>(R.id.title).text = intent.getStringExtra("title")
@@ -189,6 +193,7 @@ class BrowseActivity : Activity() {
         })
 
         val seriesId = intent.getStringExtra("seriesId")
+        episodes = seriesId != null
         if (seriesId == null) {
             setData(Repo.list(Kind.valueOf(intent.getStringExtra("kind")!!)))
         } else {
@@ -201,11 +206,18 @@ class BrowseActivity : Activity() {
     }
 
     private fun setData(list: List<Item>) {
-        all = list
-        groups = listOf("★ Favoritos", "Todos") + list.map { it.group }.distinct()
-        // Start on "Todos" unless there are favorites. A category opens on click (OK or mouse), not on focus:
-        // focus-driven switching fired on RecyclerView's own default focus and never fired for mouse clicks.
-        current = if (all.any { key(it) in prefs.favorites }) 0 else 1
+        if (episodes) {
+            // A series: only its seasons on the left, opening on the first one, episodes in order.
+            all = list.sortedWith(byEpisode)
+            groups = all.map { it.group }.distinct()
+            current = 0
+        } else {
+            all = list
+            groups = listOf("★ Favoritos", "Todos") + list.map { it.group }.distinct()
+            // Start on "Todos" unless there are favorites. A category opens on click (OK or mouse), not on focus:
+            // focus-driven switching fired on RecyclerView's own default focus and never fired for mouse clicks.
+            current = if (all.any { key(it) in prefs.favorites }) 0 else 1
+        }
         groupsAdapter = Rows(groups.map { it to null }, onClick = {
             current = it
             refresh()
@@ -213,7 +225,23 @@ class BrowseActivity : Activity() {
         })
         groupsView.adapter = groupsAdapter
         refresh()
-        groupsView.post { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() }
+        if (episodes) itemsView.post { itemsView.getChildAt(0)?.requestFocus() }
+        else groupsView.post { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() }
+    }
+
+    /** Guide for the highlighted channel, fetched only once the remote stops moving. */
+    private fun showEpg(pos: Int) {
+        val item = shown.getOrNull(pos)
+        handler.removeCallbacksAndMessages(null)
+        if (item?.kind != Kind.LIVE) { epg.visibility = View.GONE; return }
+        epg.text = ""
+        epg.visibility = View.VISIBLE
+        handler.postDelayed({
+            thread {
+                val text = runCatching { epgNow(prefs, item) }.getOrDefault("")
+                runOnUiThread { if (shown.getOrNull(pos) === item) epg.text = text }
+            }
+        }, 500)
     }
 
     private fun key(i: Item) = i.seriesId?.let { "series:$it" } ?: i.url
@@ -224,17 +252,19 @@ class BrowseActivity : Activity() {
         for (i in 0 until groupsView.childCount) groupsView.getChildAt(i).let { it.isSelected = groupsView.getChildAdapterPosition(it) == current }
         val favs = prefs.favorites
         val q = search.text.toString().trim()
-        shown = when (current) {
-            0 -> all.filter { key(it) in favs }
-            1 -> all
+        shown = when {
+            episodes -> all.filter { it.group == groups[current] }
+            current == 0 -> all.filter { key(it) in favs }
+            current == 1 -> all
             else -> all.filter { it.group == groups[current] }
         }.filter { q.isEmpty() || it.name.contains(q, ignoreCase = true) }
 
         itemsView.adapter = Rows(shown.map { it.name to it.logo },
             onClick = ::open,
             onLong = ::toggleFavorite,
-            onLeft = { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() })
-        if (shown.isEmpty()) showEmpty(if (current == 0) "Sem favoritos ainda. Segure OK num item para favoritar." else "Nada aqui.")
+            onLeft = { groupsView.findViewHolderForAdapterPosition(current)?.itemView?.requestFocus() },
+            onFocus = ::showEpg)
+        if (shown.isEmpty()) showEmpty(if (current == 0 && !episodes) "Sem favoritos ainda. Segure OK num item para favoritar." else "Nada aqui.")
         else empty.visibility = View.GONE
     }
 
@@ -269,6 +299,7 @@ class Rows(
     private val onClick: (Int) -> Unit,
     private val onLong: ((Int) -> Unit)? = null,
     private val onLeft: (() -> Unit)? = null,
+    private val onFocus: ((Int) -> Unit)? = null,
 ) : RecyclerView.Adapter<Rows.VH>() {
     var selected = -1
 
@@ -281,6 +312,9 @@ class Rows(
         val vh = VH(LayoutInflater.from(parent.context).inflate(R.layout.row, parent, false))
         val v = vh.itemView
         v.setOnClickListener { vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(onClick) }
+        if (onFocus != null) v.setOnFocusChangeListener { _, has ->
+            if (has) vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(onFocus)
+        }
         if (onLong != null) v.setOnLongClickListener { vh.bindingAdapterPosition.takeIf { it >= 0 }?.let(onLong); true }
         if (onLeft != null) v.setOnKeyListener { _, code, e ->
             if (code == KeyEvent.KEYCODE_DPAD_LEFT && e.action == KeyEvent.ACTION_DOWN) { onLeft.invoke(); true } else false
@@ -344,7 +378,18 @@ class PlayerActivity : Activity() {
         player.setMediaItem(MediaItem.fromUri(item.url))
         player.prepare()
         player.playWhenReady = true
-        if (item.kind == Kind.LIVE) toast(item.name)
+        if (item.kind == Kind.LIVE) showGuide()
+    }
+
+    private fun showGuide() {
+        val it = item
+        toast("${index + 1}. ${it.name}")
+        thread {
+            val text = runCatching { epgNow(Prefs(this), it) }.getOrDefault("")
+            runOnUiThread {
+                if (text.isNotEmpty() && item === it) Toast.makeText(this, "${index + 1}. ${it.name}\n$text", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
@@ -352,7 +397,7 @@ class PlayerActivity : Activity() {
             when (e.keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { zap(-1); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { toast("${index + 1}. ${item.name}"); return true }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { showGuide(); return true }
             }
         }
         return super.dispatchKeyEvent(e)

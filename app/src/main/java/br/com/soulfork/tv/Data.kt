@@ -77,8 +77,11 @@ object Repo {
         movies = all.filter { it.kind == Kind.MOVIE }
         // M3U lists series as loose episodes; fold them into one entry per show, like Xtream does.
         m3uEpisodes = groupEpisodes(all.filter { it.kind == Kind.EPISODE })
+        // The show keeps the list's category ("Séries | Netflix"); its episodes were regrouped by season.
+        val category = HashMap<String, String>()
+        for (e in all) if (e.kind == Kind.EPISODE) category.getOrPut(showOf(e.name)) { e.group }
         series = all.filter { it.kind == Kind.SERIES } + m3uEpisodes.map { (show, eps) ->
-            Item(show, eps[0].logo, eps[0].group, "", Kind.SERIES, "m3u:$show")
+            Item(show, eps[0].logo, category[show] ?: eps[0].group, "", Kind.SERIES, "m3u:$show")
         }
         loaded = true
     }
@@ -91,12 +94,59 @@ object Repo {
         else xtream!!.episodes(seriesId)
 }
 
-private val episodeRe = Regex("""^(.*?)[\s._-]*[Ss](\d{1,2})\s*[Ee]\d{1,3}""")
+private val firstNumber = Regex("""(\d+)""")
+private val lastEpisode = Regex("""[Ee](\d+)(?!.*[Ee]\d)""")
+
+/** Season, then episode number ("Temporada 2" + "... S02 E05" / "T2 E5 · ..."). */
+val byEpisode: Comparator<Item> = compareBy<Item>(
+    { firstNumber.find(it.group)?.value?.toIntOrNull() ?: 0 },
+    { lastEpisode.find(it.name)?.groupValues?.get(1)?.toIntOrNull() ?: 0 },
+)
+
+/** Xtream credentials: from the login, or from an M3U link of the get.php?username=&password= kind. */
+fun xtreamCreds(p: Prefs): Triple<String, String, String>? {
+    if (p.mode == "xtream") {
+        val base = p.server.trimEnd('/').let { if ("://" in it) it else "http://$it" }
+        return Triple(base, p.user, p.pass)
+    }
+    val m = Regex("""^(https?://[^/]+)/get\.php\?(.*)$""", RegexOption.IGNORE_CASE).find(p.m3uUrl.trim()) ?: return null
+    val q = m.groupValues[2].split('&').associate {
+        it.substringBefore('=') to java.net.URLDecoder.decode(it.substringAfter('=', ""), "UTF-8")
+    }
+    val user = q["username"] ?: return null
+    val pass = q["password"] ?: return null
+    return Triple(m.groupValues[1], user, pass)
+}
+
+private fun b64(s: String) = runCatching { String(android.util.Base64.decode(s, android.util.Base64.DEFAULT)) }.getOrDefault(s)
+
+private val epgCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+
+/** "Agora: X (23:30–01:15)\nA seguir: Y", or "" when there is no guide. Blocking. */
+fun epgNow(p: Prefs, item: Item): String {
+    val (base, user, pass) = xtreamCreds(p) ?: return ""
+    val id = Regex("""/(\d+)(\.\w+)?$""").find(item.url)?.groupValues?.get(1) ?: return ""
+    epgCache[id]?.let { (at, text) -> if (System.currentTimeMillis() - at < 5 * 60_000) return text }
+    val raw = httpGet("$base/player_api.php?username=${URLEncoder.encode(user, "UTF-8")}" +
+        "&password=${URLEncoder.encode(pass, "UTF-8")}&action=get_short_epg&stream_id=$id&limit=2").use { it.readText() }.trim()
+    // Some panels base64 the whole answer.
+    val json = JSONObject(if (raw.startsWith("\"")) b64(raw.trim('"')) else raw)
+    val list = json.optJSONArray("epg_listings") ?: return ""
+    val text = (0 until list.length()).joinToString("\n") { i ->
+        val e = list.getJSONObject(i)
+        (if (i == 0) "Agora: " else "A seguir: ") + b64(e.optString("title")) +
+            " (${e.optString("start").drop(11).take(5)}–${e.optString("end").drop(11).take(5)})"
+    }
+    epgCache[id] = System.currentTimeMillis() to text
+    return text
+}
+
+private val episodeRe =Regex("""^(.*?)[\s._-]*[Ss](\d{1,2})\s*[Ee]\d{1,3}""")
 
 /** "The Office S02 E05" -> show "The Office", episode grouped under "Temporada 2". */
-fun groupEpisodes(eps: List<Item>): Map<String, List<Item>> = eps.groupBy { e ->
-    episodeRe.find(e.name)?.groupValues?.get(1)?.trim()?.ifEmpty { null } ?: e.name
-}.mapValues { (_, list) ->
+fun showOf(name: String) = episodeRe.find(name)?.groupValues?.get(1)?.trim()?.ifEmpty { null } ?: name
+
+fun groupEpisodes(eps: List<Item>): Map<String, List<Item>> = eps.groupBy { showOf(it.name) }.mapValues { (_, list) ->
     list.map { e -> episodeRe.find(e.name)?.let { e.copy(group = "Temporada ${it.groupValues[2].toInt()}") } ?: e }
 }
 
