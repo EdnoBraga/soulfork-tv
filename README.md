@@ -13,6 +13,22 @@ Player de IPTV para Fire Stick / Android TV. Aceita link M3U/M3U8 ou login Xtrea
 Link do APK (sempre a versão mais nova):
 `https://github.com/EdnoBraga/soulfork-tv/releases/latest/download/SoulForkTV.apk`
 
+## Instalar na Smart TV Samsung (Tizen)
+
+O app da Samsung fica em `tizen/` e é instalado pelo PC, com a TV em modo desenvolvedor.
+
+1. TV: Aplicativos → digitar `12345` → Developer mode **On** → Host PC IP = IP do PC → reiniciar a TV.
+2. PC: Tizen Studio em `C:\tizen-studio` com o perfil de certificado **Soulfork** (Certificate Manager).
+3. Empacotar e instalar:
+
+```bash
+C:\tizen-studio\tools\sdb.exe connect <IP-da-TV>
+C:\tizen-studio\tools\ide\bin\tizen.bat package -t wgt -s Soulfork -- <copia-da-pasta-tizen>
+C:\tizen-studio\tools\ide\bin\tizen.bat install -n SoulForkTV.wgt -t <modelo-da-TV> -- <copia-da-pasta-tizen>
+```
+
+Para colar o link da lista na TV, use o teclado do app SmartThings no celular.
+
 ## Controle remoto
 
 - **OK**: abre o item. **Segurar OK**: favorita ou desfavorita.
