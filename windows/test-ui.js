@@ -151,6 +151,77 @@ const SUITE = `(async function () {
   current().back();
   await sleep(100);
 
+  // ---- a movie carries on from where it stopped ----
+  var movie = item(MOVIE, 'Filme Teste', 'Filmes', dead);
+  var vid = document.getElementById('vid');
+  // No stream reaches this check, so stand in for the decoder: a fixed length, and a
+  // currentTime that keeps whatever the player writes to it.
+  var fake = { at: 0 };
+  var decoder = function (len, at) {
+    fake.at = at;
+    Object.defineProperty(vid, 'duration', { configurable: true, get: function () { return len; } });
+    Object.defineProperty(vid, 'currentTime', {
+      configurable: true,
+      get: function () { return fake.at; },
+      set: function (v) { fake.at = v; },
+    });
+  };
+  var realDecoder = function () { delete vid.duration; delete vid.currentTime; };
+
+  localStorage.removeItem('sf.resume');
+  show(Player([movie], 0));
+  await sleep(300);
+  decoder(7200, 1800); // half an hour into a two-hour movie
+  current().back();
+  await sleep(100);
+  check(resumeAt(dead) === 1800, 'sair do player devia guardar a posicao 1800, guardou ' + resumeAt(dead));
+
+  show(Player([movie], 0));
+  await sleep(300);
+  decoder(7200, 0);
+  vid.dispatchEvent(new Event('loadedmetadata'));
+  await sleep(50);
+  check(fake.at === 1800, 'reabrir o filme devia retomar em 1800, foi para ' + fake.at);
+  check(q('#ctl [data-c="restart"]'), 'ao retomar, a barra devia oferecer assistir do inicio');
+  var mbtns = q('#ctl .btns');
+  check(mbtns && mbtns.scrollWidth <= mbtns.clientWidth + 1,
+    'a barra do filme nao devia transbordar: ' + (mbtns ? mbtns.scrollWidth + ' > ' + mbtns.clientWidth : 'sem barra'));
+  click('#ctl [data-c="restart"]');
+  await sleep(100);
+  check(fake.at === 0, 'assistir do inicio devia voltar ao comeco, foi para ' + fake.at);
+  check(resumeAt(dead) === 0, 'assistir do inicio devia esquecer a posicao guardada');
+  current().back();
+  await sleep(100);
+
+  // ---- almost at the end it starts over, and the position is dropped ----
+  saveResume(dead, 1800);
+  show(Player([movie], 0));
+  await sleep(300);
+  decoder(7200, 7150); // less than a minute to go
+  current().back();
+  await sleep(100);
+  check(resumeAt(dead) === 0, 'filme quase no fim devia ser esquecido, ficou em ' + resumeAt(dead));
+  show(Player([movie], 0));
+  await sleep(300);
+  decoder(7200, 0);
+  vid.dispatchEvent(new Event('loadedmetadata'));
+  await sleep(50);
+  check(fake.at === 0, 'filme quase no fim devia recomecar, comecou em ' + fake.at);
+  check(!q('#ctl [data-c="restart"]'), 'sem posicao guardada, a barra nao devia oferecer do inicio');
+  current().back();
+  await sleep(100);
+  realDecoder();
+
+  // ---- the store does not grow without end ----
+  localStorage.removeItem('sf.resume');
+  for (var n = 0; n < RESUME_MAX + 5; n++) saveResume('http://teste/f' + n, 100 + n);
+  check(resumePositions().length === RESUME_MAX,
+    'devia guardar no maximo ' + RESUME_MAX + ' posicoes, guardou ' + resumePositions().length);
+  check(resumeAt('http://teste/f0') === 0, 'a posicao mais antiga devia ter saido da lista');
+  check(resumeAt('http://teste/f' + (RESUME_MAX + 4)) === 100 + RESUME_MAX + 4,
+    'a posicao mais nova devia continuar guardada');
+  localStorage.removeItem('sf.resume');
+
   // ---- wiping the list asks first ----
   localStorage.setItem('sf.m3u', 'http://teste/lista.m3u');
   reset(Home());
@@ -186,7 +257,7 @@ app.whenReady().then(async () => {
     const fails = await win.webContents.executeJavaScript(SUITE, true);
     assert(Array.isArray(fails), `the suite should return a list, got ${JSON.stringify(fails)}`);
     assert.deepStrictEqual(fails, [], `\n - ${fails.join('\n - ')}`);
-    report('ok: bar, folder list, volume, theater, movie timeline and the wipe confirmation', 0);
+    report('ok: bar, folder list, volume, theater, movie timeline, resuming a movie and the wipe confirmation', 0);
   } catch (err) {
     report(`FAIL: ${err.message}`, 1);
   }
