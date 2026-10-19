@@ -3,6 +3,7 @@
 // The result goes to a file because Electron on Windows does not pipe console.log to the terminal.
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
 
@@ -10,6 +11,9 @@ const report = (text, code) => {
   fs.writeFileSync(path.join(__dirname, 'test-keys.log'), `${text}\n`);
   app.exit(code);
 };
+
+// A temporary profile: these checks must never touch the list and login of the installed app.
+app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'soulfork-check-')));
 
 require('./main.js');
 

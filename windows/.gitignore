@@ -3,4 +3,4 @@ web/
 dist/
 dist-*/
 test-keys.log
-test-player.log
+test-ui.log

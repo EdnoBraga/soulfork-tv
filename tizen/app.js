@@ -8,7 +8,7 @@ var DESKTOP = typeof window.soulfork !== 'undefined';
 var KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13, BACK: 10009, ESC: 27, BACKSPACE: 8,
   CHUP: 427, CHDOWN: 428, PLAY: 415, PAUSE: 19, PLAYPAUSE: 10252, FF: 417, RW: 412, STOP: 413,
   IME_DONE: 65376, IME_CANCEL: 65385, LONG: 'long',
-  PGUP: 33, PGDN: 34, V: 86, C: 67, T: 84 }; // PageUp/PageDown stand in for CH+/CH- on a PC keyboard
+  PGUP: 33, PGDN: 34, V: 86, C: 67, T: 84, TAB: 9, SPACE: 32 }; // PageUp/PageDown stand in for CH+/CH- on a PC keyboard
 if (typeof tizen !== 'undefined') {
   ['ChannelUp', 'ChannelDown', 'MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaFastForward',
     'MediaRewind', 'MediaStop'].forEach(function (k) { try { tizen.tvinputdevice.registerKey(k); } catch (e) {} });
@@ -377,6 +377,11 @@ document.addEventListener('keydown', function (e) {
     }
     return;
   }
+  // A focused control keeps its own keys: Tab walks the bar, Enter and Space press the button
+  // under the keyboard instead of acting on the screen behind it.
+  var onControl = document.activeElement && document.activeElement.dataset &&
+    document.activeElement.dataset.c !== undefined;
+  if (k === KEY.TAB || (onControl && document.activeElement.tagName === 'BUTTON' && (k === KEY.ENTER || k === KEY.SPACE))) return;
   e.preventDefault();
   if (k === KEY.ENTER) {
     if (!okDownAt) { okDownAt = Date.now(); longFired = false; }
@@ -487,6 +492,27 @@ function Login(autoload, refresh) {
   return screen;
 }
 
+/** Yes/no for something that cannot be undone. Opens on "no", so a stray OK changes nothing. */
+function Confirm(question, detail, yes, onYes) {
+  var idx = 0;
+  var screen = {
+    render: function () {
+      app.innerHTML = '<div class="home"><h1>' + esc(question) + '</h1>' +
+        '<div class="status">' + esc(detail) + '</div><div class="actions">' +
+        '<div class="tile" id="no" data-n="0">Cancelar</div>' +
+        '<div class="tile" id="yes" data-n="1">' + esc(yes) + '</div></div></div>';
+      document.getElementById(idx ? 'yes' : 'no').classList.add('focus');
+    },
+    click: function (d) { idx = Number(d.n); screen.key(KEY.ENTER); },
+    key: function (k) {
+      if (k !== KEY.ENTER) { idx = step(idx, k, 2); screen.render(); return; }
+      back();
+      if (idx) onYes();
+    },
+  };
+  return screen;
+}
+
 function Home() {
   var cards = [['TV ao Vivo', repo.live.length + ' canais'], ['Filmes', repo.movies.length + ' títulos'],
     ['Séries', repo.series.length + ' títulos']];
@@ -509,9 +535,13 @@ function Home() {
         else if (idx < C) show(Multi());
         else if (idx === C) reset(Login(true, true));
         else {
-          ['m3u', 'server', 'user', 'pass'].forEach(prefs.del);
-          clearCache().catch(function () {});
-          reset(Login(false));
+          // The only thing here that cannot be undone: it drops the login and the downloaded list.
+          show(Confirm('Trocar lista?', 'Isso apaga o login e a lista já baixada. Você vai precisar informar o link de novo e esperar o download.',
+            'Sim, trocar', function () {
+              ['m3u', 'server', 'user', 'pass'].forEach(prefs.del);
+              clearCache().catch(function () {});
+              reset(Login(false));
+            }));
         }
         return;
       }
@@ -965,8 +995,14 @@ function Player(list, start) {
     return (h ? h + ':' + pad(m) : String(m)) + ':' + pad(t % 60);
   }
   function played() { return vid.duration ? Math.min(100, vid.currentTime / vid.duration * 100) : 0; }
-  function slider(name, filled) {
-    return '<div class="' + name + '" data-c="' + name + '"><div class="fill" style="width:' + filled + '%"></div></div>';
+  function btn(c, label, text) {
+    return '<button type="button" class="b" data-c="' + c + '" title="' + esc(label) + '" aria-label="' + esc(label) + '">' +
+      text + '</button>';
+  }
+  function slider(name, label, filled) {
+    return '<div class="' + name + '" data-c="' + name + '" tabindex="0" role="slider" aria-label="' + esc(label) +
+      '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(filled) +
+      '"><div class="fill" style="width:' + filled + '%"></div></div>';
   }
   /** Where along a slider the click landed, 0..1. */
   function at(e) {
@@ -977,23 +1013,39 @@ function Player(list, start) {
   function controls() {
     var b = [];
     // Live has no pause and no timeline; a movie has no channel to zap to.
-    if (live()) b.push('<b data-c="prev">⏮</b><b data-c="list">☰ Canais</b><b data-c="next">⏭</b>');
-    else b.push('<b data-c="play">' + (paused ? '▶' : '❚❚') + '</b><b data-c="rw">⏪ 10s</b><b data-c="ff">30s ⏩</b>');
-    b.push('<b data-c="mute">' + (vid.muted || !vid.volume ? '🔇' : '🔊') + '</b>');
-    b.push(slider('vol', Math.round((vid.muted ? 0 : vid.volume) * 100)));
-    if (!live()) b.push('<div class="time">' + clock(vid.currentTime) + ' / ' + clock(vid.duration) + '</div>');
-    b.push('<b data-c="theater">◼ ' + (theater ? 'Sair do teatro' : 'Teatro') + '</b>');
-    b.push('<b data-c="full">⛶</b><b data-c="top">📌</b>');
-    if (live()) b.push('<b data-c="multi">⊞ Multitela</b>');
-    b.push('<b data-c="vlc">VLC</b>');
+    if (live()) {
+      b.push(btn('prev', 'Canal anterior', '⏮') + btn('list', 'Canais desta pasta', '☰ Canais') +
+        btn('next', 'Próximo canal', '⏭'));
+    } else {
+      b.push(btn('play', paused ? 'Continuar' : 'Pausar', paused ? '▶' : '❚❚') +
+        btn('rw', 'Voltar 10 segundos', '⏪ 10s') + btn('ff', 'Avançar 30 segundos', '30s ⏩'));
+    }
+    var muted = vid.muted || !vid.volume;
+    b.push(btn('mute', muted ? 'Tirar o mudo' : 'Sem som', muted ? '🔇' : '🔊'));
+    b.push(slider('vol', 'Volume', Math.round((vid.muted ? 0 : vid.volume) * 100)));
+    if (!live()) {
+      b.push('<div class="time">' + clock(vid.currentTime) + ' / ' + clock(vid.duration) + '</div>');
+    }
+    b.push(btn('theater', theater ? 'Sair do modo teatro' : 'Modo teatro, só o vídeo', '◼ ' + (theater ? 'Sair do teatro' : 'Teatro')));
+    b.push(btn('full', 'Tela cheia (F11)', '⛶') + btn('top', 'Manter a janela à frente (F10)', '📌'));
+    if (live()) b.push(btn('multi', 'Mandar para o multitela', '⊞ Multitela'));
+    b.push(btn('vlc', 'Abrir no VLC', 'VLC'));
     b.push('<div class="now">' + esc(item()[I_NAME]) + '</div>');
-    return (live() ? '' : slider('seek', played())) + '<div class="btns">' + b.join('') + '</div>';
+    return (live() ? '' : slider('seek', 'Posição do filme', played())) + '<div class="btns">' + b.join('') + '</div>';
   }
 
   function showCtl() {
     if (!DESKTOP) return;
     ctl = ctl || layer('ctl');
+    ctl.setAttribute('role', 'toolbar');
+    ctl.setAttribute('aria-label', 'Controles do player');
+    // Rebuilding drops the focused element, so put the keyboard back where it was.
+    var focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.c : '';
     ctl.innerHTML = controls();
+    if (focused) {
+      var again = ctl.querySelector('[data-c="' + focused + '"]');
+      if (again) again.focus();
+    }
     ctl.className = 'on';
     // The body says what is on screen, so the toast can step aside and the bar can stop
     // under the channel list instead of hiding its last buttons behind it.
@@ -1004,6 +1056,7 @@ function Player(list, start) {
   }
   function hideCtl() {
     if (listOpen) return; // still picking a channel
+    if (ctl && ctl.contains(document.activeElement)) return; // the keyboard is on a button
     if (ctl) ctl.className = '';
     document.body.classList.remove('bar');
     document.body.classList.add('nocursor');
@@ -1024,11 +1077,14 @@ function Player(list, start) {
   }
   function drawList() {
     chlist = chlist || layer('chlist');
+    chlist.setAttribute('role', 'group');
+    chlist.setAttribute('aria-label', 'Canais da pasta ' + (item()[I_GROUP] || ''));
     chlist.innerHTML = '<h2>' + esc(item()[I_GROUP] || 'Canais') + '</h2>' + folder().map(function (i) {
       var it = list[i];
-      return '<div class="row' + (i === idx ? ' sel' : '') + '" data-c="ch:' + i + '">' +
-        (it[I_LOGO] ? '<img src="' + esc(it[I_LOGO]) + '" onerror="this.style.visibility=\'hidden\'">' : '') +
-        '<span>' + esc(it[I_NAME]) + '</span></div>';
+      return '<button type="button" class="row' + (i === idx ? ' sel' : '') + '" data-c="ch:' + i + '"' +
+        (i === idx ? ' aria-current="true"' : '') + '>' +
+        (it[I_LOGO] ? '<img src="' + esc(it[I_LOGO]) + '" alt="" onerror="this.style.visibility=\'hidden\'">' : '') +
+        '<span>' + esc(it[I_NAME]) + '</span></button>';
     }).join('');
     chlist.className = 'on';
     document.body.classList.add('list');
@@ -1051,7 +1107,11 @@ function Player(list, start) {
     if (!theater) { showCtl(); return; }
     hideToast();
     closeList();
+    dropFocus(); // theater beats the "keyboard is on a button" guard in hideCtl
     hideCtl();
+  }
+  function dropFocus() {
+    if (ctl && ctl.contains(document.activeElement) && document.activeElement.blur) document.activeElement.blur();
   }
 
   function act(c, e) {
@@ -1073,10 +1133,25 @@ function Player(list, start) {
     if (listOpen) drawList();
     showCtl();
   }
+  /** Arrows on a focused slider nudge it, so volume and seeking work without a mouse. */
+  function sliderKey(k) {
+    var el = document.activeElement, c = el && el.dataset ? el.dataset.c : '';
+    if ((c !== 'vol' && c !== 'seek') || (k !== KEY.LEFT && k !== KEY.RIGHT)) return false;
+    var d = k === KEY.RIGHT ? 1 : -1;
+    if (c === 'vol') {
+      vid.volume = Math.max(0, Math.min(1, (vid.muted ? 0 : vid.volume) + d * 0.05));
+      vid.muted = false;
+    } else if (vid.duration) {
+      vid.currentTime = Math.max(0, Math.min(vid.duration, vid.currentTime + d * 10));
+    }
+    showCtl();
+    return true;
+  }
   function teardown() {
     clearTimeout(hideTimer);
     clearInterval(ticker);
     ticker = 0;
+    dropFocus();
     document.removeEventListener('mousemove', showCtl);
     closeList();
     if (ctl) ctl.className = '';
@@ -1134,6 +1209,7 @@ function Player(list, start) {
     suspend: function () { if (AV) try { webapis.avplay.suspend(); } catch (e) {} },
     restore: function () { if (AV) try { webapis.avplay.restore(); } catch (e) {} },
     key: function (k) {
+      if (DESKTOP && sliderKey(k)) return;
       if (DESKTOP && k === KEY.T) { act('theater'); return; }
       if (DESKTOP && k === KEY.C && live()) { act('list'); return; }
       if (live()) {

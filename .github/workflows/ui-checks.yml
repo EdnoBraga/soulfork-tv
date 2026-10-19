@@ -1,0 +1,32 @@
+name: UI checks
+
+# The Windows app and the web app it shares with the TVs. The APK has its own workflow.
+on:
+  push:
+    branches: [main]
+    paths: ["windows/**", "tizen/**", ".github/workflows/ui-checks.yml"]
+  pull_request:
+    paths: ["windows/**", "tizen/**", ".github/workflows/ui-checks.yml"]
+
+jobs:
+  checks:
+    # Windows, not Linux with xvfb: these checks measure a real layout, and the fonts differ.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - run: npm ci
+      - run: node copy-web.js
+      # Electron on Windows does not pipe console.log back, so each check writes its own log file.
+      - name: Window shortcuts
+        run: npx electron test-keys.js; code=$?; cat test-keys.log; exit $code
+      - name: Interface
+        run: npx electron test-ui.js; code=$?; cat test-ui.log; exit $code
