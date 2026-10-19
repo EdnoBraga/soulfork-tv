@@ -36,10 +36,17 @@ function createWindow() {
   win.on('resize', fit);
   win.webContents.on('did-finish-load', fit);
 
-  // F11 toggles full screen (the page swallows keys for remote-style navigation).
+  // F11 toggles full screen, F10 pins the window above every other app
+  // (the page swallows keys for remote-style navigation).
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && input.key === 'F11') {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F11') {
       win.setFullScreen(!win.isFullScreen());
+      event.preventDefault();
+    } else if (input.key === 'F10') {
+      const onTop = !win.isAlwaysOnTop();
+      win.setAlwaysOnTop(onTop);
+      win.setTitle(onTop ? 'SoulFork TV — sempre no topo' : 'SoulFork TV');
       event.preventDefault();
     }
   });
