@@ -47,6 +47,30 @@ function favorites() {
 }
 function saveFavorites(set) { prefs.set('fav', JSON.stringify(Array.from(set))); }
 
+// ---------- where each movie stopped ----------
+// Pairs of [url, seconds], oldest first. A list can hold tens of thousands of movies and
+// localStorage is small, so only the newest RESUME_MAX positions survive.
+var RESUME_MAX = 200;
+function resumePositions() {
+  try {
+    var a = JSON.parse(prefs.get('resume') || '[]');
+    return a instanceof Array ? a : [];
+  } catch (e) { return []; }
+}
+/** Seconds to carry on from, 0 when this one has nothing worth resuming. */
+function resumeAt(url) {
+  var a = resumePositions();
+  for (var i = 0; i < a.length; i++) if (a[i][0] === url) return a[i][1];
+  return 0;
+}
+/** Zero seconds forgets the item, which is what a movie watched to the end deserves. */
+function saveResume(url, secs) {
+  var a = resumePositions(), out = [];
+  for (var i = 0; i < a.length; i++) if (a[i][0] !== url) out.push(a[i]);
+  if (secs > 0) out.push([url, Math.round(secs)]);
+  prefs.set('resume', JSON.stringify(out.slice(-RESUME_MAX)));
+}
+
 // ---------- items ----------
 // Compact arrays instead of objects: big lists have ~300k entries and TVs are short on memory.
 var LIVE = 0, MOVIE = 1, SERIES = 2, EPISODE = 3;
@@ -919,14 +943,34 @@ function Browse(title, items, loading, episodes, pick) {
 function Player(list, start) {
   var idx = start, paused = false, vid = document.getElementById('vid'), stopHls = null;
   var theater = false;
+  // The url the video actually holds, so a position is never saved under the wrong item.
+  var playing = '', resumed = false;
   function item() { return list[idx]; }
   function live() { return item()[I_KIND] === LIVE; }
   /** Theater mode means no interface at all, so routine messages stay quiet (errors never do). */
   function say(msg, ms) { if (!theater) toast(msg, ms); }
 
+  /** Position and length in seconds, from whichever player is running. */
+  function where() {
+    if (!AV) return [vid.currentTime || 0, vid.duration || 0];
+    try { return [webapis.avplay.getCurrentTime() / 1000, webapis.avplay.getDuration() / 1000]; }
+    catch (e) { return [0, 0]; }
+  }
+  /** Keep where this movie is: every way out of the player passes through stop(). */
+  function remember() {
+    if (!playing) return; // a live channel, or nothing loaded yet
+    var w = where();
+    if (!isFinite(w[1]) || w[1] <= 0) return; // length unknown: no way to tell the end from the start
+    // The last stretch counts as watched, and the first seconds are not worth a slot.
+    var done = w[0] >= w[1] - 60 || w[0] >= w[1] * 0.98;
+    saveResume(playing, done || w[0] < 15 ? 0 : w[0]);
+  }
   function stop() {
+    remember();
+    playing = '';
     if (AV) { try { webapis.avplay.stop(); } catch (e) {} try { webapis.avplay.close(); } catch (e) {} }
     if (stopHls) { stopHls(); stopHls = null; }
+    vid.onloadedmetadata = null;
     vid.pause(); vid.removeAttribute('src'); vid.load(); vid.hidden = true;
   }
   /** The PC's built-in player can't do every format (mkv, HEVC): offer VLC instead. */
@@ -937,7 +981,11 @@ function Player(list, start) {
     var it = item();
     stop();
     paused = false;
-    say(live() ? (idx + 1) + '. ' + it[I_NAME] : it[I_NAME]);
+    playing = live() ? '' : it[I_URL];
+    var from = playing ? resumeAt(playing) : 0;
+    resumed = from > 0;
+    say(live() ? (idx + 1) + '. ' + it[I_NAME]
+      : it[I_NAME] + (from ? '\nContinuando de ' + clock(from) : ''));
     if (live()) showGuide(5000);
     if (AV) {
       try {
@@ -946,10 +994,13 @@ function Player(list, start) {
         webapis.avplay.setListener({
           onbufferingstart: function () { say('Carregando…', 0); },
           onbufferingcomplete: hideToast,
-          onstreamcompleted: function () { if (!live()) back(); },
+          onstreamcompleted: function () { if (!live()) { remember(); back(); } },
           onerror: function (e) { toast('Não foi possível tocar (' + e + ')', 6000); },
         });
-        webapis.avplay.prepareAsync(function () { webapis.avplay.play(); },
+        webapis.avplay.prepareAsync(function () {
+          webapis.avplay.play();
+          if (from) try { webapis.avplay.seekTo(Math.round(from * 1000)); } catch (e) {}
+        },
           function (e) { toast('Não foi possível tocar (' + e + ')', 6000); });
       } catch (e) { toast('Não foi possível tocar (' + (e.message || e) + ')', 6000); }
     } else { // Windows app / desktop browser
@@ -958,6 +1009,8 @@ function Player(list, start) {
       if (live()) stopHls = playHls(vid, it[I_URL], failed);
       else {
         vid.onerror = function () { failed(vid.error ? 'formato não suportado' : 'erro'); };
+        // The position only sticks once the file has reported how long it is.
+        vid.onloadedmetadata = function () { if (from > 0 && from < vid.duration) vid.currentTime = from; };
         vid.src = it[I_URL];
         vid.play().catch(function () {});
       }
@@ -981,7 +1034,7 @@ function Player(list, start) {
   }
 
   // ---------- on-screen controls (Windows only: a TV has no mouse, and its volume is the set's) ----------
-  var ctl = null, chlist = null, hideTimer = 0, ticker = 0, listOpen = false;
+  var ctl = null, chlist = null, hideTimer = 0, ticker = 0, listOpen = false, keeper = 0;
 
   function layer(id) {
     var el = document.getElementById(id);
@@ -1019,6 +1072,7 @@ function Player(list, start) {
     } else {
       b.push(btn('play', paused ? 'Continuar' : 'Pausar', paused ? '▶' : '❚❚') +
         btn('rw', 'Voltar 10 segundos', '⏪ 10s') + btn('ff', 'Avançar 30 segundos', '30s ⏩'));
+      if (resumed) b.push(btn('restart', 'Assistir do início', '⟲ Do início'));
     }
     var muted = vid.muted || !vid.volume;
     b.push(btn('mute', muted ? 'Tirar o mudo' : 'Sem som', muted ? '🔇' : '🔊'));
@@ -1119,7 +1173,11 @@ function Player(list, start) {
     else if (c === 'play') togglePause();
     else if (c === 'prev') { idx = (idx - 1 + list.length) % list.length; play(); }
     else if (c === 'next') { idx = (idx + 1) % list.length; play(); }
-    else if (c === 'rw') seek(-10000);
+    else if (c === 'restart') {
+      resumed = false;
+      if (AV) { try { webapis.avplay.seekTo(0); } catch (e) {} } else vid.currentTime = 0;
+      saveResume(playing, 0);
+    } else if (c === 'rw') seek(-10000);
     else if (c === 'ff') seek(30000);
     else if (c === 'list') toggleList();
     else if (c === 'mute') vid.muted = !vid.muted;
@@ -1150,7 +1208,9 @@ function Player(list, start) {
   function teardown() {
     clearTimeout(hideTimer);
     clearInterval(ticker);
+    clearInterval(keeper);
     ticker = 0;
+    keeper = 0;
     dropFocus();
     document.removeEventListener('mousemove', showCtl);
     closeList();
@@ -1190,6 +1250,8 @@ function Player(list, start) {
     render: function () {
       document.body.classList.add('playing');
       play();
+      // The set can be switched off in the middle of a film, so the position is written as it goes.
+      if (!keeper) keeper = setInterval(remember, 10000);
       if (!DESKTOP) return;
       closeList(); // a previous player may have left one open over the page
       document.addEventListener('mousemove', showCtl);
