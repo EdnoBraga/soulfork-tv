@@ -40,19 +40,33 @@ function createWindow() {
   // (the page swallows keys for remote-style navigation).
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
-    if (input.key === 'F11') {
-      win.setFullScreen(!win.isFullScreen());
-      event.preventDefault();
-    } else if (input.key === 'F10') {
-      const onTop = !win.isAlwaysOnTop();
-      win.setAlwaysOnTop(onTop);
-      win.setTitle(onTop ? 'SoulFork TV — sempre no topo' : 'SoulFork TV');
+    const toggle = input.key === 'F11' ? toggleFullScreen : input.key === 'F10' ? toggleOnTop : null;
+    if (toggle) {
+      toggle(win);
       event.preventDefault();
     }
   });
 
   win.loadFile(path.join(__dirname, 'web', 'index.html'));
 }
+
+function toggleFullScreen(win) {
+  win.setFullScreen(!win.isFullScreen());
+}
+
+function toggleOnTop(win) {
+  const onTop = !win.isAlwaysOnTop();
+  win.setAlwaysOnTop(onTop);
+  win.setTitle(onTop ? 'SoulFork TV — sempre no topo' : 'SoulFork TV');
+}
+
+// The player's on-screen buttons reach the window through here, so button and key do the same thing.
+ipcMain.handle('window-toggle', (e, what) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win) return false;
+  (what === 'top' ? toggleOnTop : toggleFullScreen)(win);
+  return true;
+});
 
 function findVlc() {
   const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean);
