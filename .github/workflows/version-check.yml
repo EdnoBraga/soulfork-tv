@@ -1,0 +1,18 @@
+name: Version check
+
+# Its own workflow, not a step in the UI checks: this is five seconds of node and has no
+# reason to wait for a Windows runner.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node check-versions.js
