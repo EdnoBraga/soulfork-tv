@@ -89,6 +89,11 @@ ipcMain.handle('open-in-vlc', async (_e, url) => {
 });
 
 app.whenReady().then(() => {
+  // ISPs block IPTV panels at their DNS: resolve over HTTPS at Google/Cloudflare ('automatic' still took the ISP's "no such domain").
+  app.configureHostResolver({
+    secureDnsMode: 'secure',
+    secureDnsServers: ['https://dns.google/dns-query', 'https://cloudflare-dns.com/dns-query'],
+  });
   session.defaultSession.setUserAgent(USER_AGENT);
   createWindow();
 });
