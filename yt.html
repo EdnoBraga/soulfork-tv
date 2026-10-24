@@ -8,5 +8,8 @@
 <script>
 var v = (/[?&]v=([\w-]{11})/.exec(location.search) || [])[1];
 if (v) document.getElementById('p').src = 'https://www.youtube.com/embed/' + v +
-  '?autoplay=1&rel=0&hl=pt-BR&cc_load_policy=1&cc_lang_pref=pt';
+  '?autoplay=1&rel=0&hl=pt-BR&cc_load_policy=1&cc_lang_pref=pt&enablejsapi=1';
+// Player events (ready, errors) go up to the app.
+document.getElementById('p').onload = function () { this.contentWindow.postMessage('{"event":"listening","id":1,"channel":"widget"}', '*'); };
+addEventListener('message', function (e) { if (e.source !== parent) parent.postMessage(e.data, '*'); });
 </script>
