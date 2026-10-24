@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Trailer</title>
+<!-- SoulFork TV on Samsung runs from file://, which YouTube's embed refuses (error 153): the trailer plays from here. -->
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%}</style>
+<iframe id="p" allow="autoplay; encrypted-media; fullscreen"></iframe>
+<script>
+var v = (/[?&]v=([\w-]{11})/.exec(location.search) || [])[1];
+if (v) document.getElementById('p').src = 'https://www.youtube.com/embed/' + v +
+  '?autoplay=1&rel=0&hl=pt-BR&cc_load_policy=1&cc_lang_pref=pt';
+</script>
